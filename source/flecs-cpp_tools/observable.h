@@ -1,7 +1,7 @@
 #ifndef FLECS_OBSERVABLE_H
 #define FLECS_OBSERVABLE_H
 
-#include <flecs.h>
+#include "flecs.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>

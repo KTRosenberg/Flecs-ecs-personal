@@ -1,7 +1,7 @@
 #ifndef FLECS_DUMP_H
 #define FLECS_DUMP_H
 
-#include <flecs.h>
+#include "flecs.h"
 
 namespace flecs {
 
@@ -30,7 +30,7 @@ void dump(flecs::entity e, int indent = 0, bool is_instanceof = false) {
     indent ++;
 
     // Iterate type back to front so that Instanceof roles appear on top
-    for (int i = count - 1; i >= 0; i --) {
+    for (unsigned long long i = count - 1; i >= 0; i --) {
         auto id = v[i];
         auto comp = ecs.entity(id);
 
