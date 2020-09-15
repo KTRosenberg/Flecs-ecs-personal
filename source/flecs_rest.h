@@ -83,7 +83,7 @@ public:
 
         flecs::module<flecs::rest>(world, "flecs::rest");
 
-        flecs::component<Server>(world, "Server");
+        flecs::component<Server>(world, "flecs::rest::Server");
     }
 };
 
