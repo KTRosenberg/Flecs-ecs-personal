@@ -51,22 +51,22 @@
 #define ECS_ENUM_BOOTSTRAP(name, ...)\
 typedef enum name __VA_ARGS__ name;\
 ECS_UNUSED \
-static const char * __##name##__ = #__VA_ARGS__;
+static const char * __##name##__ = #__VA_ARGS__
 
 #define ECS_STRUCT_IMPL(name, descriptor, ...)\
 typedef struct name __VA_ARGS__ name;\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsStructType, sizeof(name), ECS_ALIGNOF(name), descriptor};\
+static EcsMetaType __##name##__ = {EcsStructType, sizeof(name), ECS_ALIGNOF(name), descriptor}\
 
 #define ECS_ENUM_IMPL(name, descriptor, ...)\
 typedef enum name __VA_ARGS__ name;\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsEnumType, sizeof(name), ECS_ALIGNOF(name), descriptor};
+static EcsMetaType __##name##__ = {EcsEnumType, sizeof(name), ECS_ALIGNOF(name), descriptor}
 
 #define ECS_BITMASK_IMPL(name, descriptor, ...)\
 typedef enum name __VA_ARGS__ name;\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsBitmaskType, sizeof(name), ECS_ALIGNOF(name), descriptor};
+static EcsMetaType __##name##__ = {EcsBitmaskType, sizeof(name), ECS_ALIGNOF(name), descriptor}
 
 #define ECS_STRUCT_C(T, ...) ECS_STRUCT_IMPL(T, #__VA_ARGS__, __VA_ARGS__)
 #define ECS_ENUM_C(T, ...) ECS_ENUM_IMPL(T, #__VA_ARGS__, __VA_ARGS__)
@@ -75,24 +75,24 @@ static EcsMetaType __##name##__ = {EcsBitmaskType, sizeof(name), ECS_ALIGNOF(nam
 #define ECS_ARRAY(name, T, length)\
 typedef T name[length];\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsArrayType, sizeof(T) * length, ECS_ALIGNOF(T), "(" #T "," #length ")"};
+static EcsMetaType __##name##__ = {EcsArrayType, sizeof(T) * length, ECS_ALIGNOF(T), "(" #T "," #length ")"}
 
 #define ECS_VECTOR(name, T)\
 typedef ecs_vector_t *name;\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsVectorType, sizeof(ecs_vector_t*), ECS_ALIGNOF(ecs_vector_t*), "(" #T ")"};
+static EcsMetaType __##name##__ = {EcsVectorType, sizeof(ecs_vector_t*), ECS_ALIGNOF(ecs_vector_t*), "(" #T ")"}
 
 #define ECS_MAP(name, K, T)\
 typedef ecs_map_t *name;\
 ECS_UNUSED \
-static EcsMetaType __##name##__ = {EcsMapType, sizeof(ecs_map_t*), ECS_ALIGNOF(ecs_map_t*), "(" #K "," #T ")"};
+static EcsMetaType __##name##__ = {EcsMapType, sizeof(ecs_map_t*), ECS_ALIGNOF(ecs_map_t*), "(" #K "," #T ")"}
 
 #ifdef __cplusplus
 
 // Unspecialized class (see below)
 namespace flecs {
 template <typename T>
-class __meta__ { };    
+class __meta__ { };
 }
 
 // Specialized C++ class that stores name and descriptor of type
@@ -120,12 +120,12 @@ public:\
 
 #ifdef __cplusplus
 
-// C++ 
+// C++
 
 // Define a struct
 #define ECS_STRUCT(T, ...)\
     ECS_STRUCT_IMPL(T, #__VA_ARGS__, __VA_ARGS__);\
-    ECS_META_CPP(T, EcsStructType, #__VA_ARGS__);
+    ECS_META_CPP(T, EcsStructType, #__VA_ARGS__)
 
 // Define an enumeration
 #define ECS_ENUM(T, ...)\
@@ -135,7 +135,7 @@ public:\
 // Define a bitmask
 #define ECS_BITMASK(T, ...)\
     ECS_BITMASK_IMPL(T, #__VA_ARGS__, __VA_ARGS__);\
-    ECS_META_CPP(T, EcsBitmaskType, #__VA_ARGS__);
+    ECS_META_CPP(T, EcsBitmaskType, #__VA_ARGS__)
 
 #else
 
@@ -188,7 +188,7 @@ namespace flecs {
 
     // Define a bitmask
     // In C++ trying to assign multiple flags to a variable of an enum type will
-    // result in a compiler error. Use this template so that the serializer knows 
+    // result in a compiler error. Use this template so that the serializer knows
     // this value is a bitmask, while also keeping the compiler happy.
     template<typename T>
     using bitmask = int32_t;
@@ -208,8 +208,8 @@ ECS_ENUM_BOOTSTRAP( ecs_type_kind_t, {
 
 ECS_STRUCT( EcsMetaType, {
     ecs_type_kind_t kind;
-    size_t size;
-    size_t alignment;
+    ecs_size_t size;
+    int16_t alignment;
     const char *descriptor;
 });
 
@@ -317,10 +317,10 @@ typedef ecs_vector_t ecs_constant_vector_t;
 ECS_STRUCT_C( ecs_type_op_t, {
     ecs_entity_t type;
     ecs_type_op_kind_t kind;
-    uint16_t size;        /* Size of value or element type if array or vector */
-    uint16_t count;       /* Number of elements (only used for arrays) */
-    uint32_t offset;      /* Offset of value */
-    uint8_t alignment;    /* Alignment of value */
+    ecs_size_t size;      /* Size of value or element type if array or vector */
+    int16_t alignment; /* Alignment of value */
+    int32_t count;        /* Number of elements (only used for arrays) */
+    int32_t offset;       /* Offset of value */
     const char *name;     /* Name of value (only used for struct members) */
 
 ECS_PRIVATE
@@ -356,14 +356,14 @@ extern "C" {
 /** Convert value to a string. */
 FLECS_META_EXPORT
 char* ecs_ptr_to_str(
-    ecs_world_t *world, 
-    ecs_entity_t type, 
+    ecs_world_t *world,
+    ecs_entity_t type,
     void* ptr);
 
 /** Convert value to a string. */
 FLECS_META_EXPORT
 char* ecs_entity_to_str(
-    ecs_world_t *world, 
+    ecs_world_t *world,
     ecs_entity_t entity);
 
 
@@ -408,22 +408,22 @@ char* ecs_entity_to_str(
 /** Escape a character */
 FLECS_META_EXPORT
 char* ecs_chresc(
-    char *out, 
-    char in, 
+    char *out,
+    char in,
     char delimiter);
 
 /** Parse an escaped character */
 FLECS_META_EXPORT
 const char* ecs_chrparse(
-    const char *in, 
+    const char *in,
     char *out);
 
 /** Escape a string */
 FLECS_META_EXPORT
-size_t ecs_stresc(
-    char *out, 
-    size_t n, 
-    char delimiter, 
+ecs_size_t ecs_stresc(
+    char *out,
+    ecs_size_t n,
+    char delimiter,
     const char *in);
 
 #ifdef __cplusplus
@@ -458,7 +458,7 @@ typedef struct ecs_meta_cursor_t {
 FLECS_META_EXPORT
 ecs_meta_cursor_t ecs_meta_cursor(
     ecs_world_t *world,
-    ecs_entity_t type, 
+    ecs_entity_t type,
     void *base);
 
 FLECS_META_EXPORT
@@ -609,7 +609,7 @@ public:
         StructType = EcsStructType,
         ArrayType = EcsArrayType,
         VectorType = EcsVectorType,
-        MapType = EcsMapType        
+        MapType = EcsMapType
     };
 
     meta(flecs::world& world) {
