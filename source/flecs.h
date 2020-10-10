@@ -833,12 +833,18 @@ const uint64_t* ecs_sparse_new_ids(
     int32_t count);
 
 FLECS_EXPORT
-void _ecs_sparse_remove(
+void ecs_sparse_remove(
     ecs_sparse_t *sparse,
     uint64_t index);
 
-#define ecs_sparse_remove(sparse, index)\
-    _ecs_sparse_remove(sparse, index)
+FLECS_EXPORT
+void* _ecs_sparse_remove_get(
+    ecs_sparse_t *sparse,
+    ecs_size_t elem_size,
+    uint64_t index);    
+
+#define ecs_sparse_remove_get(sparse, type, index)\
+    ((type*)_ecs_sparse_remove_get(sparse, sizeof(type), index))
 
 FLECS_EXPORT
 void ecs_sparse_set_generation(
@@ -1427,7 +1433,7 @@ bool ecs_strbuf_list_appendstr(
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h>
 #elif defined(__FreeBSD__)
-#include <stdlib>
+#include <stdlib.h>
 #else
 #include <alloca.h>
 #endif
