@@ -1242,17 +1242,6 @@ size_t ecs_to_size_t(
 ecs_size_t ecs_from_size_t(
     size_t size);    
 
-/* Convert int64_t to entity */
-ecs_entity_t ecs_to_entity(
-    int64_t v);
-
-/* Convert int64_t from entity */
-int64_t ecs_from_entity(
-    ecs_entity_t v);   
-
-int32_t ecs_from_entity_to_i32(
-    ecs_entity_t v);        
-
 /* Convert 64bit value to ecs_record_t type. ecs_record_t is stored as 64bit int in the
  * entity index */
 ecs_record_t ecs_to_row(
@@ -1643,8 +1632,8 @@ const char* ecs_strerror(
     int32_t error_code)
 {
     switch (error_code) {
-    case ECS_INVALID_HANDLE:
-        return "invalid handle";
+    case ECS_INVALID_ENTITY:
+        return "invalid entity";
     case ECS_INVALID_PARAMETER:
         return "invalid parameters";
     case ECS_INVALID_COMPONENT_ID:
@@ -4309,7 +4298,7 @@ bool override_from_base(
 {
     ecs_entity_info_t base_info;
 
-    if (!ecs_get_info(world, base, &base_info)) {
+    if (!ecs_get_info(world, base, &base_info) || !base_info.table) {
         return false;
     }
 
@@ -4345,8 +4334,8 @@ bool override_from_base(
     } else {
         /* If component not found on base, check if base itself inherits */
         ecs_type_t base_type = base_info.table->type;
-        return override_component(world, component, base_type, data, column, row, 
-            count);
+        return override_component(world, component, base_type, data, column, 
+            row, count);
     }
 }
 
@@ -4410,6 +4399,9 @@ void ecs_components_override(
         if (component >= ECS_HI_COMPONENT_ID) {
             if (ECS_HAS_ROLE(component, INSTANCEOF)) {
                 ecs_entity_t base = component & ECS_COMPONENT_MASK;
+
+                /* Illegal to create an instance of 0 */
+                ecs_assert(base != 0, ECS_INVALID_PARAMETER, NULL);
                 instantiate(world, base, table, data, row, count);
 
                 /* If table has on_set systems, get table without the base
@@ -7350,6 +7342,8 @@ chunk_t* get_chunk(
     const ecs_sparse_t *sparse,
     int32_t chunk_index)
 {
+    /* If chunk_index is below zero, application used an invalid entity id */
+    ecs_assert(chunk_index >= 0, ECS_INVALID_PARAMETER, NULL);
     chunk_t *result = ecs_vector_get(sparse->chunks, chunk_t, chunk_index);
     if (result && !result->sparse) {
         return NULL;
@@ -11560,7 +11554,7 @@ bool ecs_strbuf_append_intern(
     int32_t memLeftInElement = ecs_strbuf_memLeftInCurrentElement(b);
     int32_t memLeft = ecs_strbuf_memLeft(b);
 
-    if (!memLeft) {
+    if (memLeft <= 0) {
         return false;
     }
 
@@ -11708,6 +11702,7 @@ char* ecs_strbuf_get(ecs_strbuf_t *b) {
 
     if (b->elementCount) {
         if (b->buf) {
+            b->buf[b->current->pos] = '\0';
             result = ecs_os_strdup(b->buf);
         } else {
             void *next = NULL;
@@ -12522,26 +12517,27 @@ int ecs_sig_add(
         ecs_assert(inout_kind != EcsOut, ECS_INVALID_SIGNATURE, NULL);
         elem = ecs_vector_last(sig->columns, ecs_sig_column_t);
 
+        if (elem->from_kind != from_kind) {
+            /* Cannot mix FromEntity and FromComponent in OR */
+            ecs_parser_error(sig->name, sig->expr, 0, 
+                "cannot mix source kinds in || expression");
+            goto error;
+        }
+
+        if (elem->oper_kind != EcsOperAnd && elem->oper_kind != EcsOperOr) {
+            ecs_parser_error(sig->name, sig->expr, 0, 
+                "cannot mix operators in || expression");
+            goto error;         
+        }
+
         if (elem->oper_kind == EcsOperAnd) {
             ecs_entity_t prev = elem->is.component;
             elem->is.type = NULL;
             vec_add_entity(&elem->is.type, prev);
             vec_add_entity(&elem->is.type, component);
         } else {
-            if (elem->from_kind != from_kind) {
-                /* Cannot mix FromEntity and FromComponent in OR */
-                ecs_parser_error(sig->name, sig->expr, 0, 
-                    "cannot mix source kinds in || expression");
-                goto error;
-            }
-
-            if (elem->oper_kind != EcsOperAnd && elem->oper_kind != EcsOperOr) {
-                ecs_parser_error(sig->name, sig->expr, 0, 
-                    "cannot mix operators in || expression");                
-            }
-
             vec_add_entity(&elem->is.type, component);
-        }
+        }      
 
         elem->from_kind = from_kind;
         elem->oper_kind = oper_kind;
@@ -13408,6 +13404,12 @@ ecs_entity_t ecs_run_intern(
 #endif
 #endif
 
+void activate_table(
+    ecs_world_t *world,
+    ecs_query_t *query,
+    ecs_table_t *table,
+    bool active);
+
 static
 ecs_entity_t components_contains(
     ecs_world_t *world,
@@ -13822,21 +13824,21 @@ int32_t get_component_index(
         * a table is reserved for entity id's */
         if (result != -1) {
             result ++;
-
-            /* Check if component is a tag. If it is, set table_data to
-            * zero, so that a system won't try to access the data */
-            if (!ECS_HAS_ROLE(component, CASE) && 
-                !ECS_HAS_ROLE(component, SWITCH)) 
-            {
-                component = ecs_component_id_from_id(world, component);
-                const EcsComponent *data = ecs_get(
-                    world, component, EcsComponent);
-
-                if (!data || !data->size) {
-                    result = 0;
-                }
-            }
         }
+
+        /* Check if component is a tag. If it is, set table_data to
+        * zero, so that a system won't try to access the data */
+        if (!ECS_HAS_ROLE(component, CASE) && 
+            !ECS_HAS_ROLE(component, SWITCH)) 
+        {
+            component = ecs_component_id_from_id(world, component);
+            const EcsComponent *data = ecs_get(
+                world, component, EcsComponent);
+
+            if (!data || !data->size) {
+                result = 0;
+            }
+        }        
 
         /* ecs_table_column_offset may return -1 if the component comes
          * from a prefab. If so, the component will be resolved as a
@@ -14184,7 +14186,9 @@ add_trait:
             .query = query,
             .matched_table_index = matched_table_index
         });
-    }    
+    } else if (table && ecs_table_count(table)) {
+        activate_table(world, query, table, true);
+    }
 
     if (trait_offsets) {
         ecs_os_free(trait_offsets);
@@ -14993,17 +14997,21 @@ void process_signature(
     query->flags |= (ecs_flags32_t)(has_refs(&query->sig) * EcsQueryHasRefs);
     query->flags |= (ecs_flags32_t)(has_traits(&query->sig) * EcsQueryHasTraits);
 
-    register_monitors(world, query);
+    if (!(query->flags & EcsQueryIsSubquery)) {
+        register_monitors(world, query);
+    }
 }
 
-void match_table(
+bool match_table(
     ecs_world_t *world,
     ecs_query_t *query,
     ecs_table_t *table)
 {
     if (ecs_query_match(world, table, query, NULL)) {
         add_table(world, query, table);
+        return true;
     }
+    return false;
 }
 
 /** Table activation happens when a table was or becomes empty. Deactivated
@@ -15140,7 +15148,6 @@ void remove_table(
 
 static
 void unmatch_table_w_index(
-    ecs_world_t *world,
     ecs_query_t *query,
     ecs_table_t *table,
     int32_t match)
@@ -15148,32 +15155,23 @@ void unmatch_table_w_index(
     /* If table no longer matches, remove it */
     if (match != -1) {
         remove_table(query->tables, match);
-        notify_subqueries(world, query, &(ecs_query_event_t){
-            .kind = EcsQueryTableUnmatch,
-            .table = table
-        });
     } else {
         /* Make sure the table is removed if it was inactive */
         match = table_matched(
             query->empty_tables, table);
         if (match != -1) {
             remove_table(query->empty_tables, match);
-            notify_subqueries(world, query, &(ecs_query_event_t){
-                .kind = EcsQueryTableUnmatch,
-                .table = table
-            });
         }
     }  
 }
 
 static
 void unmatch_table(
-    ecs_world_t *world,
     ecs_query_t *query,
     ecs_table_t *table)
 {
     unmatch_table_w_index(
-        world, query, table, table_matched(query->tables, table));       
+        query, table, table_matched(query->tables, table));       
 }
 
 static
@@ -15202,21 +15200,29 @@ void rematch_table(
          * previously had data no longer has data, or vice versa. Do a full
          * rematch to make sure data is consistent. */
         } else if (query->flags & EcsQueryHasOptional) {
-            unmatch_table(world, query, table);
-            ecs_table_notify(world, table, &(ecs_table_event_t){
-                .kind = EcsTableQueryUnmatch,
-                .query = query
-            }); 
+            unmatch_table(query, table);
+            if (!(query->flags & EcsQueryIsSubquery)) {
+                ecs_table_notify(world, table, &(ecs_table_event_t){
+                    .kind = EcsTableQueryUnmatch,
+                    .query = query
+                }); 
+            }
             add_table(world, query, table);
         }
     } else {
         /* Table no longer matches, remove */
         if (match != -1) {
-            unmatch_table(world, query, table);
-            ecs_table_notify(world, table, &(ecs_table_event_t){
-                .kind = EcsTableQueryUnmatch,
-                .query = query
-            }); 
+            unmatch_table(query, table);
+            if (!(query->flags & EcsQueryIsSubquery)) {
+                ecs_table_notify(world, table, &(ecs_table_event_t){
+                    .kind = EcsTableQueryUnmatch,
+                    .query = query
+                });
+            }
+            notify_subqueries(world, query, &(ecs_query_event_t){
+                .kind = EcsQueryTableUnmatch,
+                .table = table
+            });
         }
     }
 }
@@ -15228,18 +15234,16 @@ void rematch_tables(
     ecs_query_t *query,
     ecs_query_t *parent_query)
 {
-    ecs_trace_1("rematch query %s", query_name(world, query));
-
     if (parent_query) {
-        ecs_matched_table_t *tables = ecs_vector_first(query->tables, ecs_matched_table_t);
-        int32_t i, count = ecs_vector_count(query->tables);
+        ecs_matched_table_t *tables = ecs_vector_first(parent_query->tables, ecs_matched_table_t);
+        int32_t i, count = ecs_vector_count(parent_query->tables);
         for (i = 0; i < count; i ++) {
             ecs_table_t *table = tables[i].data.table;
             rematch_table(world, query, table);
         }
 
-        tables = ecs_vector_first(query->empty_tables, ecs_matched_table_t);
-        count = ecs_vector_count(query->empty_tables);
+        tables = ecs_vector_first(parent_query->empty_tables, ecs_matched_table_t);
+        count = ecs_vector_count(parent_query->empty_tables);
         for (i = 0; i < count; i ++) {
             ecs_table_t *table = tables[i].data.table;
             rematch_table(world, query, table);
@@ -15276,14 +15280,21 @@ void ecs_query_notify(
     ecs_query_t *query,
     ecs_query_event_t *event)
 {
+    bool notify = true;
+
     switch(event->kind) {
     case EcsQueryTableMatch:
         /* Creation of new table */
-        match_table(world, query, event->table);
+        if (match_table(world, query, event->table)) {
+            if (query->subqueries) {
+                notify_subqueries(world, query, event);
+            }
+        }
+        notify = false;
         break;
     case EcsQueryTableUnmatch:
         /* Deletion of table */
-        unmatch_table(world, query, event->table);
+        unmatch_table(query, event->table);
         break;
     case EcsQueryTableRematch:
         /* Rematch tables of query */
@@ -15299,7 +15310,9 @@ void ecs_query_notify(
         break;
     }
 
-    notify_subqueries(world, query, event);
+    if (notify) {
+        notify_subqueries(world, query, event);
+    }
 }
 
 /* -- Public API -- */
@@ -15317,6 +15330,10 @@ ecs_query_t* ecs_query_new_w_sig_intern(
     result->empty_tables = ecs_vector_new(ecs_matched_table_t, 0);
     result->system = system;
     result->prev_match_count = -1;
+
+    if (is_subquery) {
+        result->flags |= EcsQueryIsSubquery;
+    }
 
     process_signature(world, result);
 
@@ -15349,8 +15366,6 @@ ecs_query_t* ecs_query_new_w_sig_intern(
             * preprocessed when the query is evaluated. */
             add_table(world, result, NULL);
         }
-    } else {
-        result->flags |= EcsQueryIsSubquery;
     }
 
     if (result->cascade_by) {
@@ -17635,7 +17650,7 @@ ecs_entity_t ecs_column_entity(
     return it->table->components[index - 1];
 }
 
-ecs_entity_t ecs_column_size(
+size_t ecs_column_size(
     const ecs_iter_t *it,
     int32_t index)
 {
@@ -17764,27 +17779,6 @@ ecs_size_t ecs_from_size_t(
    return (ecs_size_t)size;
 }
 
-ecs_entity_t ecs_to_entity(
-    int64_t v)
-{
-    ecs_assert(v >= 0, ECS_INTERNAL_ERROR, NULL);
-    return (ecs_entity_t)v;
-}
-
-int64_t ecs_from_entity(
-    ecs_entity_t v)
-{
-    ecs_assert(v < INT64_MAX, ECS_INTERNAL_ERROR, NULL);
-    return (int64_t)v;
-}
-
-int32_t ecs_from_entity_to_i32(
-    ecs_entity_t v)
-{
-    ecs_assert(v < INT32_MAX, ECS_INTERNAL_ERROR, NULL);
-    return (int32_t)v;
-}
-
 /** Convert time to double */
 double ecs_time_to_double(
     ecs_time_t t)
@@ -17856,7 +17850,7 @@ void* ecs_os_memdup(
     use of this software.
     Permission is granted to anyone to use this software for any purpose,
     including commercial applications, and to alter it and redistribute it
-    freely, subject to the following ions:
+    freely, subject to the following restrictions:
         1. The origin of this software must not be misrepresented; you must not
         claim that you wrote the original software. If you use this software in a
         product, an acknowledgment in the product documentation would be
