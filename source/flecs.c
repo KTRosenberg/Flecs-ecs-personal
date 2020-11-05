@@ -258,8 +258,9 @@ typedef struct ecs_table_slice_t {
 #define EcsQueryHasRefs (64)         /* Does query have references */
 #define EcsQueryHasTraits (128)      /* Does query have traits */
 #define EcsQueryIsSubquery (256)     /* Is query a subquery */
-#define EcsQueryHasOutColumns (512)  /* Does query have out columns */
-#define EcsQueryHasOptional (1024)   /* Does query have optional columns */
+#define EcsQueryIsOrphaned (512)     /* Is subquery orphaned */
+#define EcsQueryHasOutColumns (1024) /* Does query have out columns */
+#define EcsQueryHasOptional (2048)   /* Does query have optional columns */
 
 #define EcsQueryNoActivation (EcsQueryMonitor | EcsQueryOnSet | EcsQueryUnSet)
 
@@ -269,7 +270,8 @@ typedef enum ecs_query_eventkind_t {
     EcsQueryTableEmpty,
     EcsQueryTableNonEmpty,
     EcsQueryTableRematch,
-    EcsQueryTableUnmatch
+    EcsQueryTableUnmatch,
+    EcsQueryOrphan
 } ecs_query_eventkind_t;
 
 typedef struct ecs_query_event_t {
@@ -303,6 +305,7 @@ struct ecs_query_t {
     ecs_rank_type_action_t group_table;
 
     /* Subqueries */
+    ecs_query_t *parent;
     ecs_vector_t *subqueries;
 
     /* The query kind determines how it is registered with tables */
@@ -5967,7 +5970,7 @@ size_t append_to_str(
     }
     
     if (to_write) {
-        ecs_os_strcpy(ptr, str);
+        ecs_os_strncpy(ptr, str, to_write);
     }
 
     (*required) += len;
@@ -8215,7 +8218,10 @@ ecs_entity_t ecs_import(
     ecs_entity_t old_scope = ecs_set_scope(world, 0);
     const char *old_name_prefix = world->name_prefix;
 
-    ecs_entity_t e = ecs_lookup_fullpath(world, module_name);
+    char *path = ecs_module_path_from_c(module_name);
+    ecs_entity_t e = ecs_lookup_fullpath(world, path);
+    ecs_os_free(path);
+    
     if (!e) {
         ecs_trace_1("import %s", module_name);
         ecs_log_push();
@@ -9790,7 +9796,7 @@ int32_t ecs_table_find_column(
     return ecs_type_index_of(table->type, component);
 }
 
-ecs_vector_t* ecs_table_da_get_column(
+ecs_vector_t* ecs_table_get_column(
     ecs_table_t *table,
     int32_t column)
 {
@@ -9860,7 +9866,7 @@ void ecs_table_delete_column(
     ecs_vector_t *vector)
 {
     if (!vector) {
-        vector = ecs_table_da_get_column(table, column);
+        vector = ecs_table_get_column(table, column);
         if (!vector) {
             return;
         }
@@ -9888,7 +9894,7 @@ void ecs_table_delete_column(
     ecs_vector_free(vector);
 }
 
-void* ecs_record_da_get_column(
+void* ecs_record_get_column(
     ecs_record_t *r,
     int32_t column,
     size_t c_size)
@@ -15398,6 +15404,27 @@ void rematch_tables(
     }
 }
 
+static
+void remove_subquery(
+    ecs_query_t *parent, 
+    ecs_query_t *sub)
+{
+    ecs_assert(parent != NULL, ECS_INTERNAL_ERROR, NULL);
+    ecs_assert(sub != NULL, ECS_INTERNAL_ERROR, NULL);
+    ecs_assert(parent->subqueries != NULL, ECS_INTERNAL_ERROR, NULL);
+
+    int32_t i, count = ecs_vector_count(parent->subqueries);
+    ecs_query_t **sq = ecs_vector_first(parent->subqueries, ecs_query_t*);
+
+    for (i = 0; i < count; i ++) {
+        if (sq[i] == sub) {
+            break;
+        }
+    }
+
+    ecs_vector_remove_index(parent->subqueries, ecs_query_t*, i);
+}
+
 /* -- Private API -- */
 
 void ecs_query_notify(
@@ -15432,6 +15459,11 @@ void ecs_query_notify(
     case EcsQueryTableNonEmpty:
         /* Table is non-empty, activate */
         activate_table(world, query, event->table, true);
+        break;
+    case EcsQueryOrphan:
+        ecs_assert(query->flags & EcsQueryIsSubquery, ECS_INTERNAL_ERROR, NULL);
+        query->flags |= EcsQueryIsOrphaned;
+        query->parent = NULL;
         break;
     }
 
@@ -15530,6 +15562,7 @@ ecs_query_t* ecs_subquery_new(
     ecs_sig_t sig = { 0 };
     ecs_sig_init(world, NULL, expr, &sig);
     ecs_query_t *result = ecs_query_new_w_sig_intern(world, 0, &sig, true);
+    result->parent = parent;
     add_subquery(world, parent, result);
     return result;
 }
@@ -15538,6 +15571,16 @@ void ecs_query_free(
     ecs_query_t *query)
 {
     ecs_world_t *world = query->world;
+
+    if ((query->flags & EcsQueryIsSubquery) &&
+        !(query->flags & EcsQueryIsOrphaned))
+    {
+        remove_subquery(query->parent, query);
+    }
+
+    notify_subqueries(world, query, &(ecs_query_event_t){
+        .kind = EcsQueryOrphan
+    });
 
     ecs_vector_each(query->empty_tables, ecs_matched_table_t, table, {
         free_matched_table(table);
@@ -15576,6 +15619,7 @@ ecs_iter_t ecs_query_iter_page(
     int32_t limit)
 {
     ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(!(query->flags & EcsQueryIsOrphaned), ECS_INVALID_PARAMETER, NULL);
 
     sort_tables(query->world, query);
 
@@ -15622,6 +15666,9 @@ void ecs_query_set_iter(
     int32_t row,
     int32_t count)
 {
+    ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(!(query->flags & EcsQueryIsOrphaned), ECS_INVALID_PARAMETER, NULL);
+    
     ecs_matched_table_t *table_data = ecs_vector_get(
         query->tables, ecs_matched_table_t, table_index);
     ecs_assert(table_data != NULL, ECS_INTERNAL_ERROR, NULL);
@@ -15981,6 +16028,8 @@ void ecs_query_order_by(
     ecs_entity_t sort_component,
     ecs_compare_action_t compare)
 {
+    ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(!(query->flags & EcsQueryIsOrphaned), ECS_INVALID_PARAMETER, NULL);    
     ecs_assert(query->flags & EcsQueryNeedsTables, ECS_INVALID_PARAMETER, NULL);
 
     query->sort_on_component = sort_component;
@@ -16002,6 +16051,8 @@ void ecs_query_group_by(
     ecs_entity_t sort_component,
     ecs_rank_type_action_t group_table_action)
 {
+    ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(!(query->flags & EcsQueryIsOrphaned), ECS_INVALID_PARAMETER, NULL);    
     ecs_assert(query->flags & EcsQueryNeedsTables, ECS_INVALID_PARAMETER, NULL);
 
     query->rank_on_component = sort_component;
@@ -16017,7 +16068,15 @@ void ecs_query_group_by(
 bool ecs_query_changed(
     ecs_query_t *query)
 {
+    ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(!(query->flags & EcsQueryIsOrphaned), ECS_INVALID_PARAMETER, NULL);
     return tables_dirty(query);
+}
+
+bool ecs_query_orphaned(
+    ecs_query_t *query)
+{
+    return query->flags & EcsQueryIsOrphaned;
 }
 
 ecs_entity_t ecs_component_id_from_id(
