@@ -3747,6 +3747,10 @@ bool ecs_get_info(
     ecs_entity_t entity,
     ecs_entity_info_t * info)
 {
+    if (entity & ECS_ROLE) {
+        return false;
+    }
+    
     ecs_record_t *record = ecs_eis_get(world, entity);
 
     if (!record) {
@@ -4180,6 +4184,7 @@ bool override_from_base(
     int32_t count)
 {
     ecs_entity_info_t base_info;
+    ecs_assert(component != 0, ECS_INTERNAL_ERROR, NULL);
 
     if (!ecs_get_info(world, base, &base_info) || !base_info.table) {
         return false;
@@ -4191,6 +4196,7 @@ bool override_from_base(
         void *data_array = ecs_vector_first_t(
             column->data, column->size, column->alignment);
         void *data_ptr = ECS_OFFSET(data_array, data_size * row);
+
         component = ecs_component_id_from_id(world, component);
         ecs_c_info_t *cdata = ecs_get_c_info(world, component);
         int32_t index;
@@ -7890,8 +7896,10 @@ void ecs_table_writer_finalize_table(
         record_ptr->row = i + 1;
         record_ptr->table = writer->table;
 
-        if (entities[i] >= world->stats.last_id) {
-            world->stats.last_id = entities[i] + 1;
+        /* Strip entity from generation */
+        ecs_entity_t id = entities[i] & ECS_ENTITY_MASK;
+        if (id >= world->stats.last_id) {
+            world->stats.last_id = id + 1;
         }
     }
 }
@@ -16127,10 +16135,13 @@ const EcsComponent* ecs_component_from_id(
     const EcsComponent *component = ecs_get(world, e, EcsComponent);
     if (!component && trait) {
         /* If this is a trait column and the trait is not a component, use
-            * the component type of the component the trait is applied to. */
+         * the component type of the component the trait is applied to. */
         e = ecs_entity_t_lo(trait);
         component = ecs_get(world, e, EcsComponent);
-    }    
+    }
+
+    ecs_assert(!component || !ECS_HAS_ROLE(e, CHILDOF), ECS_INTERNAL_ERROR, NULL);
+    ecs_assert(!component || !ECS_HAS_ROLE(e, INSTANCEOF), ECS_INTERNAL_ERROR, NULL);
 
     return component;
 }
@@ -21409,6 +21420,10 @@ void ecs_set_symbol(
     ecs_entity_t e,
     const char *name)
 {
+    if (!name) {
+        return;
+    }
+    
     const char *e_name = ecs_name_from_symbol(world, name);
 
     ecs_set(world, e, EcsName, { 
