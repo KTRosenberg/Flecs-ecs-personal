@@ -1167,6 +1167,10 @@ size_t ecs_to_size_t(
 ecs_size_t ecs_from_size_t(
     size_t size);    
 
+/* Get next power of 2 */
+int32_t ecs_next_pow_of_2(
+    int32_t n);
+
 /* Convert 64bit value to ecs_record_t type. ecs_record_t is stored as 64bit int in the
  * entity index */
 ecs_record_t ecs_to_row(
@@ -6933,6 +6937,7 @@ int32_t _ecs_vector_set_size(
         }
 
         if (result < elem_count) {
+            elem_count = ecs_next_pow_of_2(elem_count);
             vector = resize(vector, offset, elem_count * elem_size);
             vector->size = elem_count;
             *array_inout = vector;
@@ -17532,25 +17537,10 @@ struct ecs_map_t {
 };
 
 static
-int32_t next_pow_of_2(
-    int32_t n)
-{
-    n --;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n ++;
-
-    return n;
-}
-
-static
 int32_t get_bucket_count(
     int32_t element_count)
 {
-    return next_pow_of_2((int32_t)((float)element_count * LOAD_FACTOR));
+    return ecs_next_pow_of_2((int32_t)((float)element_count * LOAD_FACTOR));
 }
 
 static
@@ -18355,6 +18345,20 @@ ecs_size_t ecs_from_size_t(
 {
    ecs_assert(size < INT32_MAX, ECS_INTERNAL_ERROR, NULL); 
    return (ecs_size_t)size;
+}
+
+int32_t ecs_next_pow_of_2(
+    int32_t n)
+{
+    n --;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n ++;
+
+    return n;
 }
 
 /** Convert time to double */
