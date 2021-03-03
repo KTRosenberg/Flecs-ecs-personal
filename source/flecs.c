@@ -4881,9 +4881,6 @@ int32_t move_entity(
 
     /* Copy entity & components from src_table to dst_table */
     if (src_table->type) {
-        ecs_table_move(world, entity, entity, dst_table, dst_data, dst_row, 
-            src_table, src_data, src_row);
-
         /* If components were removed, invoke remove actions before deleting */
         if (removed && (src_table->flags & EcsTableHasRemoveActions)) {
             /* If entity was moved, invoke UnSet monitors for each component that
@@ -4893,7 +4890,10 @@ int32_t move_entity(
 
             ecs_run_remove_actions(
                 world, src_table, src_data, src_row, 1, removed, false);
-        }            
+        }
+
+        ecs_table_move(world, entity, entity, dst_table, dst_data, dst_row, 
+            src_table, src_data, src_row);                
     }
     
     ecs_table_delete(world, src_table, src_data, src_row, false);
@@ -16794,10 +16794,12 @@ void activate_table(
     
     ecs_vector_t *src_array, *dst_array;
     int32_t activated = 0;
+    int32_t prev_dst_count = 0;
 
     if (active) {
         src_array = query->empty_tables;
         dst_array = query->tables;
+        prev_dst_count = ecs_vector_count(dst_array);
     } else {
         src_array = query->tables;
         dst_array = query->empty_tables;
@@ -16841,7 +16843,7 @@ void activate_table(
             if (query->system) {
                 int32_t dst_count = ecs_vector_count(dst_array);
                 if (active) {
-                    if (dst_count == 1) {
+                    if (!prev_dst_count && dst_count) {
                         ecs_system_activate(world, query->system, true, NULL);
                     }
                 } else if (ecs_vector_count(src_array) == 0) {
@@ -22520,6 +22522,16 @@ ecs_entity_t ecs_lookup_w_id(
     const char *name)
 {
     if (e) {
+        /* If explicit id was provided but it does not exist in the world, make
+         * sure it has the proper scope. This can happen when an entity was 
+         * defined in another world. */
+        if (!ecs_exists(world, e)) {
+            ecs_entity_t scope = world->stage.scope;
+            if (scope) {
+                ecs_add_entity(world, e, ECS_CHILDOF | scope);
+            }
+        }
+
         if (name) {
             /* Make sure name is the same */
             const char *existing = ecs_get_name(world, e);
