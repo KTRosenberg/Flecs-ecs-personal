@@ -15230,7 +15230,11 @@ char* ecs_rule_str(
             ecs_rule_var_t *type_var = &rule->variables[type];
             type_name = type_var->name;
         } else {
-            type_name = ecs_get_name(rule->world, type);
+            if (type) {
+                type_name = ecs_get_name(rule->world, type);
+            } else {
+                type_name = NULL;
+            }
         }
 
         if (object) {
@@ -18387,7 +18391,7 @@ int ecs_sig_add(
         elem->pred.name = NULL;
         if (arg_type) {
             elem->pred.name = ecs_os_strdup(arg_type);
-        }    
+        }
 
         if (argc) {
             elem->argv = ecs_os_malloc(ECS_SIZEOF(ecs_sig_identifier_t) * argc);
