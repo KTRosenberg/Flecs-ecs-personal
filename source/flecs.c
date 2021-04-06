@@ -6571,13 +6571,13 @@ ecs_id_t ecs_get_typeid(
         /* Make sure we're not working with a stage */
         world = ecs_get_world(world);
 
-        ecs_entity_t rel = ECS_PAIR_RELATION(id);
+        ecs_entity_t rel = ecs_get_alive(world, ECS_PAIR_RELATION(id));
         if (ecs_has(world, rel, EcsComponent)) {
             /* This is not a pair object, relation is the value */
             return rel;
         } else {
             /* This is a pair object, object is the value */
-            return ECS_PAIR_OBJECT(id);
+            return ecs_get_alive(world, ECS_PAIR_OBJECT(id));
         }
     } else if (id & ECS_ROLE_MASK) {
         return 0;
@@ -10379,6 +10379,9 @@ void ecs_gauge_reduce(
     ecs_gauge_t *src,
     int32_t t_src)
 {
+    ecs_assert(dst != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(src != NULL, ECS_INVALID_PARAMETER, NULL);
+
     bool min_set = false;
     dst->min[t_dst] = 0;
     dst->avg[t_dst] = 0;
@@ -10404,6 +10407,8 @@ void ecs_get_world_stats(
 {
     ecs_assert(world != NULL, ECS_INVALID_PARAMETER, NULL);
     ecs_assert(s != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    world = ecs_get_world(world);
 
     int32_t t = s->t = t_next(s->t);
 
@@ -10486,7 +10491,12 @@ void ecs_get_query_stats(
     const ecs_query_t *query,
     ecs_query_stats_t *s)
 {
+    ecs_assert(world != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(query != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(s != NULL, ECS_INVALID_PARAMETER, NULL);
     (void)world;
+
+    world = ecs_get_world(world);
 
     int32_t t = s->t = t_next(s->t);
 
@@ -10512,6 +10522,12 @@ bool ecs_get_system_stats(
     ecs_entity_t system,
     ecs_system_stats_t *s)
 {
+    ecs_assert(world != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(s != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(system != 0, ECS_INVALID_PARAMETER, NULL);
+
+    world = ecs_get_world(world);
+
     const EcsSystem *ptr = ecs_get(world, system, EcsSystem);
     if (!ptr) {
         return false;
@@ -10536,6 +10552,9 @@ static ecs_system_stats_t* get_system_stats(
     ecs_map_t *systems,
     ecs_entity_t system)
 {
+    ecs_assert(systems != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(system != 0, ECS_INVALID_PARAMETER, NULL);
+
     ecs_system_stats_t *s = ecs_map_get(systems, ecs_system_stats_t, system);
     if (!s) {
         ecs_system_stats_t stats;
@@ -10553,6 +10572,12 @@ bool ecs_get_pipeline_stats(
     ecs_entity_t pipeline,
     ecs_pipeline_stats_t *s)
 {
+    ecs_assert(world != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(s != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(pipeline != 0, ECS_INVALID_PARAMETER, NULL);
+
+    world = ecs_get_world(world);
+
     const EcsPipelineQuery *pq = ecs_get(world, pipeline, EcsPipelineQuery);
     if (!pq) {
         return false;
@@ -10610,6 +10635,11 @@ void ecs_dump_world_stats(
     const ecs_world_stats_t *s)
 {
     int32_t t = s->t;
+
+    ecs_assert(world != NULL, ECS_INVALID_PARAMETER, NULL);
+    ecs_assert(s != NULL, ECS_INVALID_PARAMETER, NULL);
+
+    world = ecs_get_world(world);    
     
     print_counter("Frame", t, &s->frame_count_total);
     printf("-------------------------------------\n");
@@ -13719,13 +13749,14 @@ typedef enum ecs_rule_op_kind_t {
 /* Single operation */
 typedef struct ecs_rule_op_t {
     ecs_rule_op_kind_t kind;    /* What kind of operation is it */
-    ecs_rule_pair_t param;      /* Parameter that contains optional filter */
+    ecs_rule_pair_t filter;     /* Parameter that contains optional filter */
     ecs_entity_t subject;       /* If set, operation has a constant subject */
 
-    int32_t on_pass;              /* Jump location when match succeeds */
+    int32_t on_pass;            /* Jump location when match succeeds */
     int32_t on_fail;            /* Jump location when match fails */
+    int32_t frame;              /* Register frame */
 
-    int32_t column;              /* Corresponding column index in signature */
+    int32_t column;             /* Corresponding column index in signature */
     int32_t r_in;               /* Optional In/Out registers */
     int32_t r_out;
 
@@ -13790,7 +13821,6 @@ typedef struct ecs_rule_op_ctx_t {
         ecs_rule_each_ctx_t each;
         ecs_rule_setjmp_ctx_t setjmp;
     } is;
-    int32_t last_op;
 } ecs_rule_op_ctx_t;
 
 /* Rule variables allow for the rule to be parameterized */
@@ -13812,7 +13842,8 @@ struct ecs_rule_t {
 
     int32_t variable_count;     /* Number of variables in signature */
     int32_t subject_variable_count;
-    int32_t register_count;    /* Number of registers in rule */
+    int32_t register_count;     /* Number of registers in rule */
+    int32_t frame_count;        /* Number of register frames */
     int32_t column_count;       /* Number of columns in signature */
     int32_t operation_count;    /* Number of operations in rule */
 };
@@ -13985,6 +14016,54 @@ ecs_rule_var_t* column_obj(
     }
 }
 
+/* Return predicate variable from pair */
+ecs_rule_var_t* pair_pred(
+    ecs_rule_t *rule,
+    ecs_rule_pair_t *pair)
+{
+    if (pair->reg_mask & RULE_PAIR_PREDICATE) {
+        return &rule->variables[pair->pred];
+    } else {
+        return NULL;
+    }
+}
+
+/* Return object variable from pair */
+ecs_rule_var_t* pair_obj(
+    ecs_rule_t *rule,
+    ecs_rule_pair_t *pair)
+{
+    if (pair->reg_mask & RULE_PAIR_OBJECT) {
+        return &rule->variables[pair->obj];
+    } else {
+        return NULL;
+    }
+}
+
+/* Create new frame for storing register values. Each operation that yields data
+ * gets its own register frame, which contains all variables reified up to that
+ * point. The preceding frame always contains the reified variables from the
+ * previous operation. Operations that do not yield data (such as control flow)
+ * do not have their own frames. */
+static
+int32_t push_frame(
+    ecs_rule_t *rule)
+{
+    return rule->frame_count ++;
+}
+
+/* Get register array for current stack frame. The stack frame is determined by
+ * the current operation that is evaluated. The register array contains the
+ * values for the reified variables. If a variable hasn't been reified yet, its
+ * register will store a wildcard. */
+static
+ecs_rule_reg_t* get_register_frame(
+    ecs_rule_iter_t *it,
+    int32_t frame)    
+{
+    return &it->registers[frame * it->rule->variable_count];
+}
+
 /* Get register array for current stack frame. The stack frame is determined by
  * the current operation that is evaluated. The register array contains the
  * values for the reified variables. If a variable hasn't been reified yet, its
@@ -13992,20 +14071,38 @@ ecs_rule_var_t* column_obj(
 static
 ecs_rule_reg_t* get_registers(
     ecs_rule_iter_t *it,
-    int32_t op)    
+    ecs_rule_op_t *op)    
 {
-    return &it->registers[op * it->rule->variable_count];
+    return get_register_frame(it, op->frame);
 }
 
 /* Get columns array. Columns store, for each matched column in a table, the 
  * index at which it occurs. This reduces the amount of searching that
  * operations need to do in a type, since select/with already provide it. */
 static
+int32_t* rule_get_columns_frame(
+    ecs_rule_iter_t *it,
+    int32_t frame)    
+{
+    return &it->columns[frame * it->rule->column_count];
+}
+
+static
 int32_t* rule_get_columns(
     ecs_rule_iter_t *it,
-    int32_t op)    
+    ecs_rule_op_t *op)    
 {
-    return &it->columns[op * it->rule->column_count];
+    return rule_get_columns_frame(it, op->frame);
+}
+
+/* Get sources array. Sources store, for each matched term in a query, the 
+ * entity id with whicih the term was matched. */
+static
+ecs_entity_t* rule_get_sources_frame(
+    ecs_rule_iter_t *it,
+    int32_t frame)    
+{
+    return &it->sources[frame * it->rule->column_count];
 }
 
 static
@@ -14264,6 +14361,7 @@ void set_filter_expr_mask(
 static
 ecs_rule_filter_t pair_to_filter(
     ecs_rule_iter_t *it,
+    ecs_rule_op_t *op,
     ecs_rule_pair_t pair)
 {
     ecs_entity_t pred = pair.pred;
@@ -14276,7 +14374,7 @@ ecs_rule_filter_t pair_to_filter(
     /* Get registers in case we need to resolve ids from registers. Get them
      * from the previous, not the current stack frame as the current operation
      * hasn't reified its variables yet. */
-    ecs_rule_reg_t *regs = get_registers(it, it->op_ctx[it->op].last_op);
+    ecs_rule_reg_t *regs = get_register_frame(it, op->frame - 1);
 
     if (pair.reg_mask & RULE_PAIR_OBJECT) {
         obj = entity_reg_get(it->rule, regs, obj);
@@ -14329,15 +14427,16 @@ ecs_rule_filter_t pair_to_filter(
  * registers will also point to a wildcard. */
 static
 void reify_variables(
-    ecs_rule_iter_t *it, 
+    ecs_rule_iter_t *it,
+    ecs_rule_op_t *op,
     ecs_rule_filter_t *filter,
     ecs_type_t type,
     int32_t column)
 {
     const ecs_rule_t *rule = it->rule;
     const ecs_rule_var_t *vars = rule->variables;
-     
-    ecs_rule_reg_t *regs = get_registers(it, it->op);
+
+    ecs_rule_reg_t *regs = get_registers(it, op);
     ecs_entity_t *elem = ecs_vector_get(type, ecs_entity_t, column);
     ecs_assert(elem != NULL, ECS_INTERNAL_ERROR, NULL);
 
@@ -14816,6 +14915,7 @@ ecs_rule_var_t* get_most_specific_var(
                 op->kind = EcsRuleEach;
                 op->on_pass = rule->operation_count;
                 op->on_fail = rule->operation_count - 2;
+                op->frame = rule->frame_count;
                 op->has_in = true;
                 op->has_out = true;
                 op->r_in = tvar->id;
@@ -14823,6 +14923,8 @@ ecs_rule_var_t* get_most_specific_var(
 
                 /* Entity will either be written or has been written */
                 written[evar->id] = true;
+
+                push_frame(rule);
             }
 
             return evar;
@@ -14903,7 +15005,8 @@ ecs_rule_op_t* insert_operation(
     ecs_rule_op_t *op = create_operation(rule);
     op->on_pass = rule->operation_count;
     op->on_fail = rule->operation_count - 2;
-    op->param = pair;  
+    op->frame = rule->frame_count;
+    op->filter = pair;
 
     /* Store corresponding signature column so we can correlate and
      * store the table columns with signature columns. */
@@ -14927,6 +15030,8 @@ void insert_input(
     /* When Input is evaluated with redo = true it will return false, which will
      * finish the program as op becomes -1. */
     op->on_fail = -1;  
+
+    push_frame(rule);
 }
 
 /* Insert last operation, which is always Yield. When the program hits Yield,
@@ -14958,6 +15063,8 @@ void insert_yield(
     } else {
         op->r_in = var->id;
     }
+
+    op->frame = push_frame(rule);
 }
 
 /* Return superset/subset including the root */
@@ -14966,9 +15073,7 @@ void insert_inclusive_set(
     ecs_rule_t *rule,
     ecs_rule_op_kind_t op_kind,
     ecs_rule_var_t *out,
-    ecs_rule_pair_t param,
-    ecs_rule_var_t *root,
-    ecs_entity_t root_entity,
+    ecs_rule_pair_t *pair,
     int32_t c,
     bool *written)
 {
@@ -15005,7 +15110,6 @@ void insert_inclusive_set(
      * this operation will fail and return to SetJmp, which will cause it
      * to switch to the *Set operation. */
     store->kind = EcsRuleStore;
-    store->param.pred = param.pred;
     store->on_pass = next_op;
     store->on_fail = setjmp_lbl;
     store->has_in = true;
@@ -15013,31 +15117,47 @@ void insert_inclusive_set(
     store->r_out = out->id;
     store->column = c;
 
-    /* If the object of the filter is not a variable, store literal */
-    if (!root) {
-        store->r_in = UINT8_MAX;
-        store->subject = root_entity;
-        store->param.obj = root_entity;
+    ecs_rule_var_t *pred = pair_pred(rule, pair);    
+    if (!pred) {
+        store->filter.pred = pair->pred;
     } else {
-        store->r_in = root->id;
-        store->param.obj = root->id;
-        store->param.reg_mask = RULE_PAIR_OBJECT;
+        store->filter.pred = pred->id;
+        store->filter.reg_mask |= RULE_PAIR_PREDICATE;
+    }
+
+    /* If the object of the filter is not a variable, store literal */
+    ecs_rule_var_t *obj = pair_obj(rule, pair);
+    if (!obj) {
+        store->r_in = UINT8_MAX;
+        store->subject = pair->obj;
+        store->filter.obj = pair->obj;
+    } else {
+        store->r_in = obj->id;
+        store->filter.obj = obj->id;
+        store->filter.reg_mask = RULE_PAIR_OBJECT;
     }
 
     /* This is either a SubSet or SuperSet operation */
     set->kind = op_kind;
-    set->param.pred = param.pred;
     set->on_pass = next_op;
     set->on_fail = prev_op;
     set->has_out = true;
     set->r_out = out->id;
     set->column = c;
 
-    if (!root) {
-        set->param.obj = root_entity;
+    /* Predicate can be a variable if it's non-final */
+    if (!pred) {
+        set->filter.pred = pair->pred;
     } else {
-        set->param.obj = root->id;
-        set->param.reg_mask = RULE_PAIR_OBJECT;
+        set->filter.pred = pred->id;
+        set->filter.reg_mask |= RULE_PAIR_PREDICATE;
+    }
+
+    if (!obj) {
+        set->filter.obj = pair->obj;
+    } else {
+        set->filter.obj = obj->id;
+        set->filter.reg_mask |= RULE_PAIR_OBJECT;
     }
 
     /* The jump operation jumps to either the store or subset operation,
@@ -15060,19 +15180,12 @@ static
 ecs_rule_var_t* store_inclusive_set(
     ecs_rule_t *rule,
     ecs_rule_op_kind_t op_kind,
-    ecs_rule_pair_t param,
-    ecs_rule_var_t *root,
-    ecs_entity_t root_entity,
+    ecs_rule_pair_t *pair,
     int32_t c,
     bool *written)
 {
     /* The subset operation returns tables */
     ecs_rule_var_kind_t var_kind = EcsRuleVarKindTable;
-
-    int32_t root_id;
-    if (root) {
-        root_id = root->id;
-    }
 
     /* The superset operation returns entities */
     if (op_kind == EcsRuleSuperSet) {
@@ -15090,18 +15203,15 @@ ecs_rule_var_t* store_inclusive_set(
         av = &rule->variables[ave->id - 1];
     }
 
-    /* Since we added variables, refetch pointer to root, since it might have
-     * moved if the variables table was reallocd */
-    if (root) {
-        root = &rule->variables[root_id];
+    /* Ensure we're using the most specific version of obj */
+    ecs_rule_var_t *obj = pair_obj(rule, pair);
+    if (obj) {
+        obj = get_most_specific_var(rule, obj, written);
+        pair->obj = obj->id;
     }
 
-    /* Ensure we're using the most specific version of root */
-    root = get_most_specific_var(rule, root, written);
-
     /* Generate the operations */
-    insert_inclusive_set(
-        rule, op_kind, av, param, root, root_entity, -1, written);
+    insert_inclusive_set(rule, op_kind, av, pair, -1, written);
 
     /* Make sure to return entity variable, and that it is populated */
     return ensure_entity_written(rule, av, c, written);
@@ -15109,7 +15219,6 @@ ecs_rule_var_t* store_inclusive_set(
 
 static
 bool is_known(
-    ecs_rule_t *rule,
     ecs_rule_var_t *var,
     bool *written)
 {
@@ -15118,6 +15227,25 @@ bool is_known(
     } else {
         return written[var->id];
     }
+}
+
+static
+bool is_pair_known(
+    ecs_rule_t *rule,
+    ecs_rule_pair_t *pair,
+    bool *written)
+{
+    ecs_rule_var_t *pred_var = pair_pred(rule, pair);
+    if (!is_known(pred_var, written)) {
+        return false;
+    }
+
+    ecs_rule_var_t *obj_var = pair_obj(rule, pair);
+    if (!is_known(obj_var, written)) {
+        return false;
+    }
+
+    return true;
 }
 
 static
@@ -15153,24 +15281,71 @@ void set_output_to_subj(
 static
 void insert_select_or_with(
     ecs_rule_t *rule,
-    ecs_rule_op_t *op,
+    int32_t c,
     ecs_sig_column_t *column,
     ecs_rule_var_t *subj,
+    ecs_rule_pair_t *pair,
     bool *written)
 {
-    ecs_rule_var_t *tvar = NULL, *evar = to_entity(rule, subj);
+    ecs_rule_op_t *op;
+    bool eval_subject_supersets = false;
+
+    /* Find any entity and/or table variables for subject */
+    ecs_rule_var_t *tvar = NULL, *evar = to_entity(rule, subj), *var = evar;
     if (subj && subj->kind == EcsRuleVarKindTable) {
         tvar = subj;
+        if (!evar) {
+            var = tvar;
+        }
+    }
+
+    int32_t lbl_start = rule->operation_count;
+    ecs_rule_pair_t filter;
+    if (pair) {
+        filter = *pair;
+    } else {
+        filter = column_to_pair(rule, column);
+    }
+
+    if (!var) {
+        /* Only insert implicit IsA if filter isn't already an IsA */
+        if (!filter.transitive || filter.pred != EcsIsA) {
+            ecs_rule_pair_t pair = {
+                .pred = EcsIsA,
+                .obj = column->argv[0].entity
+            };
+            evar = subj = store_inclusive_set(
+                rule, EcsRuleSuperSet, &pair, -1, written);
+            tvar = NULL;
+            eval_subject_supersets = true;
+        }
+    }
+
+    /* If no pair is provided, create operation from specified column */
+    if (!pair) {
+        op = insert_operation(rule, c, written);
+
+    /* If an explicit pair is provided, override the default one from the 
+     * column. This allows for using a predicate or object variable different
+     * from what is in the column. One application of this is to substitute a
+     * predicate with its subsets, if it is non final */
+    } else {
+        op = insert_operation(rule, -1, written);
+        op->filter = *pair;
+
+        /* Assign the column id, so that the operation will still be correctly
+         * associated with the correct expression column. */
+        op->column = c;
     }
 
     /* If entity variable is known and resolved, create with for it */
-    if (evar && is_known(rule, evar, written)) {
+    if (evar && is_known(evar, written)) {
         op->kind = EcsRuleWith;
         op->r_in = evar->id;
         set_input_to_subj(op, column, subj);
 
     /* If table variable is known and resolved, create with for it */
-    } else if (tvar && is_known(rule, tvar, written)) {
+    } else if (tvar && is_known(tvar, written)) {
         op->kind = EcsRuleWith;
         op->r_in = tvar->id;
         set_input_to_subj(op, column, subj);
@@ -15191,63 +15366,49 @@ void insert_select_or_with(
         written[subj->id] = true;
     }
 
-    if (op->param.reg_mask & RULE_PAIR_PREDICATE) {
-        written[op->param.pred] = true;
+    /* If supersets of subject are being evaluated, and we're looking for a
+     * specific filter, stop as soon as the filter has been matched. */
+    if (eval_subject_supersets && is_pair_known(rule, &op->filter, written)) {
+        op = insert_operation(rule, -1, written);
+
+        /* When the next operation returns, it will first hit SetJmp with a redo
+         * which will switch the jump label to the previous operation */
+        op->kind = EcsRuleSetJmp;
+        op->on_pass = rule->operation_count;
+        op->on_fail = lbl_start - 1;
     }
 
-    if (op->param.reg_mask & RULE_PAIR_OBJECT) {
-        written[op->param.obj] = true;
+    if (op->filter.reg_mask & RULE_PAIR_PREDICATE) {
+        written[op->filter.pred] = true;
+    }
+
+    if (op->filter.reg_mask & RULE_PAIR_OBJECT) {
+        written[op->filter.obj] = true;
     }
 }
 
 static
-void insert_nonfinal_select_or_with(
+void prepare_predicate(
     ecs_rule_t *rule,
-    ecs_sig_column_t *column,
-    ecs_rule_pair_t param,
-    ecs_rule_var_t *subj,
     int32_t c,
-    bool *written)    
+    ecs_rule_pair_t *pair,
+    bool *written)  
 {
-    ecs_assert(!param.final, ECS_INTERNAL_ERROR, NULL);
-    
-    int32_t subj_id;
-    if (subj) {
-        subj_id = subj->id;
+    /* If pair is not final, resolve term for all IsA relationships of the
+     * predicate. Note that if the pair has final set to true, it is guaranteed
+     * that the predicate can be used in an IsA query */
+    if (!pair->final) {
+        ecs_rule_pair_t isa_pair = {
+            .pred = EcsIsA,
+            .obj = pair->pred
+        };
+
+        ecs_rule_var_t *pred = store_inclusive_set(
+            rule, EcsRuleSubSet, &isa_pair, c, written);
+
+        pair->pred = pred->id;
+        pair->reg_mask |= RULE_PAIR_PREDICATE;
     }
-
-    /* If predicate is not final, evaluate with all subsets of predicate.
-     * Create a param with only the predicate set. */
-    ecs_rule_pair_t pred_param;
-    pred_param.pred = EcsIsA;
-    pred_param.obj = param.pred;
-    pred_param.reg_mask = 0;
-    ecs_rule_var_t *pred_subsets = store_inclusive_set(
-        rule, EcsRuleSubSet, pred_param, NULL, param.pred, c, written);
-    
-    /* Refetch subject variable, as variable array may have reallocated */
-    if (subj) {
-        subj = &rule->variables[subj_id];
-    }
-
-    /*  Make sure to use the most specific version of the object */
-    if (param.reg_mask & RULE_PAIR_OBJECT) {
-        ecs_rule_var_t *obj = &rule->variables[param.obj];
-        obj = get_most_specific_var(rule, obj, written);
-    }    
-
-    ecs_rule_op_t *op = insert_operation(rule, -1, written);
-
-    /* Use subset variable for predicate */
-    op->param.pred = pred_subsets->id;
-    op->param.obj = param.obj;
-    op->param.reg_mask = param.reg_mask | RULE_PAIR_PREDICATE;
-
-    /* Associate last operation with column to ensure that the resolved
-     * component id gets written. */
-    op->column = c;
-
-    insert_select_or_with(rule, op, column, subj, written);
 }
 
 static
@@ -15257,10 +15418,13 @@ void insert_term_2(
     int32_t c,
     bool *written)
 {
-    ecs_rule_var_t *pred = column_pred(rule, column);
-    ecs_rule_var_t *subj = column_subj(rule, column);
+    ecs_rule_pair_t filter = column_to_pair(rule, column);
+    prepare_predicate(rule, c, &filter, written);
+
     ecs_rule_var_t *obj = column_obj(rule, column);
-    ecs_rule_pair_t param = column_to_pair(rule, column);
+    obj = get_most_specific_var(rule, obj, written);
+
+    ecs_rule_var_t *subj = column_subj(rule, column);
 
     int32_t subj_id;
     if (subj) {
@@ -15275,18 +15439,14 @@ void insert_term_2(
     /* Ensure we're working with the most specific version of subj we can get */
     subj = get_most_specific_var(rule, subj, written);
 
-    if (pred || (param.final && !param.transitive)) {
-        ecs_rule_op_t *op = insert_operation(rule, c, written);
-        insert_select_or_with(rule, op, column, subj, written);
+    if (!filter.transitive) {
+        insert_select_or_with(rule, c, column, subj, &filter, written);
 
-    } else if (!param.final) {
-        insert_nonfinal_select_or_with(rule, column, param, subj, c, written);
-    } else if (param.transitive) {
-        if (is_known(rule, subj, written)) {
-            if (is_known(rule, obj, written)) {
+    } else if (filter.transitive) {
+        if (is_known(subj, written)) {
+            if (is_known(obj, written)) {
                 ecs_rule_var_t *obj_subsets = store_inclusive_set(
-                    rule, EcsRuleSubSet, param, obj, 
-                    column->argv[1].entity, c, written);
+                    rule, EcsRuleSubSet, &filter, c, written);
 
                 if (subj) {
                     subj = &rule->variables[subj_id];
@@ -15297,35 +15457,51 @@ void insert_term_2(
                     }
                 }
 
-                ecs_rule_op_t *op = insert_operation(rule, c, written);
-                op->kind = EcsRuleWith;
-                set_input_to_subj(op, column, subj);
+                ecs_rule_pair_t pair = filter;
+                pair.obj = obj_subsets->id;
+                pair.reg_mask |= RULE_PAIR_OBJECT;
 
-                /* Use subset variable for object */
-                op->param.obj = obj_subsets->id;
-                op->param.reg_mask = RULE_PAIR_OBJECT;
+                insert_select_or_with(rule, c, column, subj, &pair, written);
             } else {
                 ecs_assert(obj != NULL, ECS_INTERNAL_ERROR, NULL);
 
                 obj = to_entity(rule, obj);
 
+                ecs_rule_pair_t set_pair = filter;
+                set_pair.reg_mask &= RULE_PAIR_PREDICATE; /* clear object mask */
+
+                if (subj) {
+                    set_pair.obj = subj->id;
+                    set_pair.reg_mask |= RULE_PAIR_OBJECT;
+                } else {
+                    set_pair.obj = column->argv[0].entity;
+                }
+
                 insert_inclusive_set(
-                    rule, EcsRuleSuperSet, obj, param, subj, 
-                    column->argv[0].entity, c, written);
+                    rule, EcsRuleSuperSet, obj, &set_pair, c, written);
             }
         } else {
             ecs_assert(subj != NULL, ECS_INTERNAL_ERROR, NULL);
 
-            if (is_known(rule, obj, written)) {
+            if (is_known(obj, written)) {
                 /* Object variable is known, but this does not guarantee that
                  * we are working with the entity. Make sure that we get (and
                  * populate) the entity variable, as insert_inclusive_set does
                  * not do this */
                 obj = get_most_specific_var(rule, obj, written);
 
+                ecs_rule_pair_t set_pair = filter;
+                set_pair.reg_mask &= RULE_PAIR_PREDICATE; /* clear object mask */
+
+                if (obj) {
+                    set_pair.obj = obj->id;
+                    set_pair.reg_mask |= RULE_PAIR_OBJECT;
+                } else {
+                    set_pair.obj = column->argv[1].entity;
+                }
+
                 insert_inclusive_set(
-                    rule, EcsRuleSubSet, subj, param, obj, 
-                    column->argv[1].entity, c, written);
+                    rule, EcsRuleSubSet, subj, &set_pair, c, written);
             } else {
                 ecs_assert(obj != NULL, ECS_INTERNAL_ERROR, NULL);
 
@@ -15353,17 +15529,19 @@ void insert_term_2(
                 set_output_to_subj(op, column, subj);
 
                 /* Set object to anonymous variable */
-                op->param.pred = param.pred;
-                op->param.obj = av->id;
-                op->param.reg_mask = param.reg_mask | RULE_PAIR_OBJECT;
+                op->filter.pred = filter.pred;
+                op->filter.obj = av->id;
+                op->filter.reg_mask = filter.reg_mask | RULE_PAIR_OBJECT;
 
                 written[subj->id] = true;
                 written[av->id] = true;
 
+                /* Create new frame for operations that create inclusive set */
+                push_frame(rule);
+
                 /* Insert superset instruction to find all supersets */
                 insert_inclusive_set(
-                    rule, EcsRuleSuperSet, obj, op->param, av,
-                    0, c, written);
+                    rule, EcsRuleSuperSet, obj, &op->filter, c, written);
 
             }
         }
@@ -15377,19 +15555,16 @@ void insert_term_1(
     int32_t c,
     bool *written)
 {
-    ecs_rule_var_t *pred = column_pred(rule, column);
-    ecs_rule_var_t *subj = column_subj(rule, column);
-    ecs_rule_pair_t param = column_to_pair(rule, column);
+    ecs_rule_pair_t filter = column_to_pair(rule, column);
+    prepare_predicate(rule, c, &filter, written);
 
-    /* Ensure we're working with the most specific version of subj we can get */
+    ecs_rule_var_t *pred = column_pred(rule, column);
+    pred = get_most_specific_var(rule, pred, written);
+
+    ecs_rule_var_t *subj = column_subj(rule, column);
     subj = get_most_specific_var(rule, subj, written);
 
-    if (pred || param.final) {
-        ecs_rule_op_t *op = insert_operation(rule, c, written);
-        insert_select_or_with(rule, op, column, subj, written);      
-    } else {
-        insert_nonfinal_select_or_with(rule, column, param, subj, c, written);
-    }
+    insert_select_or_with(rule, c, column, subj, &filter, written);
 }
 
 static
@@ -15404,6 +15579,8 @@ void insert_term(
     } else if (column->argc == 2) {
         insert_term_2(rule, column, c, written);
     }
+
+    push_frame(rule);
 }
 
 /* Create program from operations that will execute the query */
@@ -15499,9 +15676,12 @@ void compile_program(
             op->kind = EcsRuleEach;
             op->r_in = table_var->id;
             op->r_out = var->id;
+            op->frame = rule->frame_count;
             op->has_in = true;
             op->has_out = true;
             written[var->id] = true;
+            
+            push_frame(rule);
         }
     }     
 
@@ -15577,7 +15757,7 @@ char* ecs_rule_str(
     int32_t i, count = rule->operation_count;
     for (i = 1; i < count; i ++) {
         ecs_rule_op_t *op = &rule->operations[i];
-        ecs_rule_pair_t pair = op->param;
+        ecs_rule_pair_t pair = op->filter;
         ecs_entity_t type = pair.pred;
         ecs_entity_t object = pair.obj;
         const char *type_name, *object_name;
@@ -15602,8 +15782,8 @@ char* ecs_rule_str(
             }
         }
 
-        ecs_strbuf_append(&buf, "%2d: [P:%2d, F:%2d] ", i, 
-            op->on_pass, op->on_fail);
+        ecs_strbuf_append(&buf, "%2d: [S:%2d, P:%2d, F:%2d] ", i, 
+            op->frame, op->on_pass, op->on_fail);
 
         bool has_filter = false;
 
@@ -15643,18 +15823,6 @@ char* ecs_rule_str(
             continue;
         }
 
-        if (op->has_in) {
-            ecs_rule_var_t *r_in = get_variable(rule, op->r_in);
-            if (r_in) {
-                ecs_strbuf_append(&buf, "I:%s%s ", 
-                    r_in->kind == EcsRuleVarKindTable ? "t" : "",
-                    r_in->name);
-            } else if (op->subject) {
-                ecs_strbuf_append(&buf, "I:%s ", 
-                    ecs_get_name(rule->world, op->subject));
-            }
-        }
-
         if (op->has_out) {
             ecs_rule_var_t *r_out = get_variable(rule, op->r_out);
             if (r_out) {
@@ -15663,6 +15831,18 @@ char* ecs_rule_str(
                     r_out->name);
             } else if (op->subject) {
                 ecs_strbuf_append(&buf, "O:%s ", 
+                    ecs_get_name(rule->world, op->subject));
+            }
+        }
+
+        if (op->has_in) {
+            ecs_rule_var_t *r_in = get_variable(rule, op->r_in);
+            if (r_in) {
+                ecs_strbuf_append(&buf, "I:%s%s ", 
+                    r_in->kind == EcsRuleVarKindTable ? "t" : "",
+                    r_in->name);
+            } else if (op->subject) {
+                ecs_strbuf_append(&buf, "I:%s ", 
                     ecs_get_name(rule->world, op->subject));
             }
         }
@@ -15734,11 +15914,12 @@ ecs_entity_t ecs_rule_variable(
     int32_t var_id)
 {
     ecs_rule_iter_t *it = &iter->iter.rule;
+    const ecs_rule_t *rule = it->rule;
 
     /* We can only return entity variables */
-    if (it->rule->variables[var_id].kind == EcsRuleVarKindEntity) {
-        ecs_rule_reg_t *regs = get_registers(it, it->rule->operation_count - 1);
-        return entity_reg_get(it->rule, regs, var_id);
+    if (rule->variables[var_id].kind == EcsRuleVarKindEntity) {
+        ecs_rule_reg_t *regs = get_register_frame(it, rule->frame_count - 1);
+        return entity_reg_get(rule, regs, var_id);
     } else {
         return 0;
     }
@@ -15767,6 +15948,9 @@ ecs_iter_t ecs_rule_iter(
         if (rule->column_count) {
             it->columns = ecs_os_malloc(rule->operation_count * 
                 rule->column_count * ECS_SIZEOF(int32_t));
+
+            it->sources = ecs_os_calloc(rule->operation_count *
+                rule->column_count * ECS_SIZEOF(ecs_entity_t));
         }
     }
 
@@ -15786,6 +15970,8 @@ ecs_iter_t ecs_rule_iter(
     if (result.column_count) {
         it->table.components = ecs_os_malloc(
             result.column_count * ECS_SIZEOF(ecs_entity_t));
+        it->table.sources = ecs_os_malloc(
+            result.column_count * ECS_SIZEOF(ecs_entity_t));            
     }
 
     return result;
@@ -15797,6 +15983,7 @@ void ecs_rule_iter_free(
     ecs_rule_iter_t *it = &iter->iter.rule;
     ecs_os_free(it->registers);
     ecs_os_free(it->columns);
+    ecs_os_free(it->sources);
     ecs_os_free(it->op_ctx);
     ecs_os_free(it->table.components);
     it->registers = NULL;
@@ -15934,6 +16121,27 @@ ecs_entity_t set_column(
     }
 }
 
+static
+ecs_entity_t set_source(
+    ecs_rule_iter_t *it,
+    ecs_rule_op_t *op,
+    ecs_rule_reg_t *regs,
+    int32_t r,
+    int32_t column)
+{
+    if (op->column == -1) {
+        return -1;
+    }
+
+    const ecs_rule_t *rule = it->rule;
+
+    if (rule->variables[r].kind == EcsRuleVarKindEntity) {
+        return it->table.sources[op->column] = reg_get_entity(rule, op, regs, r);
+    } else {
+        return it->table.sources[op->column] = 0;
+    }
+}
+
 /* Input operation. The input operation acts as a placeholder for the start of
  * the program, and creates an entry in the register array that can serve to
  * store variables passed to an iterator. */
@@ -15966,11 +16174,10 @@ bool eval_superset(
     ecs_world_t *world = rule->world;
     ecs_rule_superset_ctx_t *op_ctx = &it->op_ctx[op_index].is.superset;
     ecs_rule_superset_frame_t *frame = NULL;
-    ecs_table_record_t table_record;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
 
     /* Get register indices for output */
-    int32_t sp, row;
+    int32_t sp;
     int32_t r = op->r_out;
 
     /* Register cannot be a literal, since we need to store things in it */
@@ -15981,8 +16188,8 @@ bool eval_superset(
         ECS_INTERNAL_ERROR, NULL);
 
     /* Get queried for id, fill out potential variables */
-    ecs_rule_pair_t pair = op->param;
-    ecs_rule_filter_t filter = pair_to_filter(it, pair);
+    ecs_rule_pair_t pair = op->filter;
+    ecs_rule_filter_t filter = pair_to_filter(it, op, pair);
     ecs_sparse_t *table_set;
     ecs_table_t *table = NULL;
 
@@ -16086,7 +16293,7 @@ bool eval_subset(
     ecs_rule_subset_ctx_t *op_ctx = &it->op_ctx[op_index].is.subset;
     ecs_rule_subset_frame_t *frame = NULL;
     ecs_table_record_t table_record;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
 
     /* Get register indices for output */
     int32_t sp, row;
@@ -16094,8 +16301,8 @@ bool eval_subset(
     ecs_assert(r != UINT8_MAX, ECS_INTERNAL_ERROR, NULL);
 
     /* Get queried for id, fill out potential variables */
-    ecs_rule_pair_t pair = op->param;
-    ecs_rule_filter_t filter = pair_to_filter(it, pair);
+    ecs_rule_pair_t pair = op->filter;
+    ecs_rule_filter_t filter = pair_to_filter(it, op, pair);
     ecs_sparse_t *table_set;
     ecs_table_t *table = NULL;
 
@@ -16180,7 +16387,7 @@ bool eval_subset(
             /* Create look_for expression with the resolved entity as object */
             pair.reg_mask &= ~RULE_PAIR_OBJECT; /* turn of bit because it's not a reg */
             pair.obj = e;
-            filter = pair_to_filter(it, pair);
+            filter = pair_to_filter(it, op, pair);
 
             /* Find table set for expression */
             table = NULL;
@@ -16230,15 +16437,15 @@ bool eval_select(
     ecs_world_t *world = rule->world;
     ecs_rule_with_ctx_t *op_ctx = &it->op_ctx[op_index].is.with;
     ecs_table_record_t table_record;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
 
     /* Get register indices for output */
     int32_t r = op->r_out;
     ecs_assert(r != UINT8_MAX, ECS_INTERNAL_ERROR, NULL);
 
     /* Get queried for id, fill out potential variables */
-    ecs_rule_pair_t pair = op->param;
-    ecs_rule_filter_t filter = pair_to_filter(it, pair);
+    ecs_rule_pair_t pair = op->filter;
+    ecs_rule_filter_t filter = pair_to_filter(it, op, pair);
 
     int32_t column = -1;
     ecs_table_t *table = NULL;
@@ -16268,7 +16475,7 @@ bool eval_select(
         return false;
     }
 
-    int32_t *columns = rule_get_columns(it, op_index);
+    int32_t *columns = rule_get_columns(it, op);
 
     /* If this is not a redo, start at the beginning */
     if (!redo) {
@@ -16300,7 +16507,6 @@ bool eval_select(
 
             column = columns[op->column];
             column = find_next_match(table->type, column + 1, &filter);
-
             columns[op->column] = column;
         }
 
@@ -16325,7 +16531,7 @@ bool eval_select(
 
     /* If this is a wildcard query, fill out the variable registers */
     if (filter.wildcard) {
-        reify_variables(it, &filter, table->type, column);
+        reify_variables(it, op, &filter, table->type, column);
     }
     
     set_column(it, op, table->type, column);
@@ -16346,14 +16552,14 @@ bool eval_with(
     ecs_world_t *world = rule->world;
     ecs_rule_with_ctx_t *op_ctx = &it->op_ctx[op_index].is.with;
     ecs_table_record_t *table_record = NULL;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
 
     /* Get register indices for input */
     int32_t r = op->r_in;
 
     /* Get queried for id, fill out potential variables */
-    ecs_rule_pair_t pair = op->param;
-    ecs_rule_filter_t filter = pair_to_filter(it, pair);
+    ecs_rule_pair_t pair = op->filter;
+    ecs_rule_filter_t filter = pair_to_filter(it, op, pair);
 
     /* If looked for entity is not a wildcard (meaning there are no unknown/
      * unconstrained variables) and this is a redo, nothing more to yield. */
@@ -16428,7 +16634,7 @@ bool eval_with(
         return false;
     }
 
-    int32_t *columns = rule_get_columns(it, op_index);
+    int32_t *columns = rule_get_columns(it, op);
     int32_t new_column = -1;
 
     /* If this is not a redo, start at the beginning */
@@ -16490,10 +16696,11 @@ bool eval_with(
 
     /* If this is a wildcard query, fill out the variable registers */
     if (filter.wildcard) {
-        reify_variables(it, &filter, table->type, column);
+        reify_variables(it, op, &filter, table->type, column);
     }
 
     set_column(it, op, table->type, column);
+    set_source(it, op, regs, r, column);
 
     return true;
 }
@@ -16512,7 +16719,7 @@ bool eval_each(
     bool redo)
 {
     ecs_rule_each_ctx_t *op_ctx = &it->op_ctx[op_index].is.each;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
     int32_t r_in = op->r_in;
     int32_t r_out = op->r_out;
     int32_t row;
@@ -16589,7 +16796,7 @@ bool eval_store(
     }
 
     const ecs_rule_t *rule = it->rule;
-    ecs_rule_reg_t *regs = get_registers(it, op_index);
+    ecs_rule_reg_t *regs = get_registers(it, op);
     int32_t r_in = op->r_in;
     int32_t r_out = op->r_out;
 
@@ -16597,7 +16804,7 @@ bool eval_store(
     reg_set_entity(rule, regs, r_out, e);
 
     if (op->column >= 0) {
-        ecs_rule_filter_t filter = pair_to_filter(it, op->param);
+        ecs_rule_filter_t filter = pair_to_filter(it, op, op->filter);
         it->table.components[op->column] = filter.mask;
     }
 
@@ -16705,8 +16912,8 @@ void push_registers(
         return;
     }
 
-    ecs_rule_reg_t *src_regs = get_registers(it, cur);
-    ecs_rule_reg_t *dst_regs = get_registers(it, next);
+    ecs_rule_reg_t *src_regs = get_register_frame(it, cur);
+    ecs_rule_reg_t *dst_regs = get_register_frame(it, next);
 
     memcpy(dst_regs, src_regs, 
         ECS_SIZEOF(ecs_rule_reg_t) * it->rule->variable_count);
@@ -16726,10 +16933,31 @@ void push_columns(
         return;
     }
 
-    int32_t *src_cols = rule_get_columns(it, cur);
-    int32_t *dst_cols = rule_get_columns(it, next);
+    int32_t *src_cols = rule_get_columns_frame(it, cur);
+    int32_t *dst_cols = rule_get_columns_frame(it, next);
 
     memcpy(dst_cols, src_cols, ECS_SIZEOF(int32_t) * it->rule->column_count);
+}
+
+/* Utility to copy all sources to the next frame. Sources keep track of which
+ * entity (subject) was found for the term. The columns array is important, as 
+ * it is used to determine whether a component is owned, shared, or from another
+ * source altogether (like the system or parent). */
+static
+void push_sources(
+    ecs_rule_iter_t *it,
+    int32_t cur,
+    int32_t next)
+{
+    if (!it->rule->column_count) {
+        return;
+    }
+
+    ecs_entity_t *src_sources = rule_get_sources_frame(it, cur);
+    ecs_entity_t *dst_sources = rule_get_sources_frame(it, next);
+
+    memcpy(dst_sources, src_sources, 
+        ECS_SIZEOF(int32_t) * it->rule->column_count);
 }
 
 /* Set iterator data from table */
@@ -16757,7 +16985,7 @@ void set_iter_table(
     iter->entities = &entities[offset];
 
     /* Set table parameters */
-    it->table.columns = rule_get_columns(it, cur);
+    it->table.columns = rule_get_columns_frame(it, cur);
     it->table.data = data;
     iter->table_columns = data->columns;
 
@@ -16795,7 +17023,7 @@ void populate_iterator(
         iter->count = 0;
     } else {
         ecs_rule_var_t *var = &rule->variables[r];
-        ecs_rule_reg_t *regs = get_registers(it, op_index);
+        ecs_rule_reg_t *regs = get_register_frame(it, op->frame);
         ecs_rule_reg_t *reg = &regs[r];
 
         if (var->kind == EcsRuleVarKindTable) {
@@ -16803,7 +17031,7 @@ void populate_iterator(
             int32_t count = regs[r].is.table.count;
             int32_t offset = regs[r].is.table.offset;
 
-            set_iter_table(iter, table, op_index, offset);
+            set_iter_table(iter, table, op->frame, offset);
 
             if (count) {
                 iter->offset = offset;
@@ -16825,7 +17053,7 @@ void populate_iterator(
             /* If an entity is not stored in a table, it could not have
              * been matched by anything */
             ecs_assert(record != NULL, ECS_INTERNAL_ERROR, NULL);
-            set_iter_table(iter, record->table, op_index, offset);
+            set_iter_table(iter, record->table, op->frame, offset);
             iter->count = 1;
         }
     }   
@@ -16854,7 +17082,7 @@ bool ecs_rule_next(
     ecs_rule_iter_t *it = &iter->iter.rule;
     const ecs_rule_t *rule = it->rule;
     bool redo = it->redo;
-    int32_t last_index = 0;
+    int32_t last_frame = -1;
 
     do {
         /* Evaluate an operation. The result of an operation determines the
@@ -16874,19 +17102,20 @@ bool ecs_rule_next(
          * input. */
         int32_t op_index = it->op;
         ecs_rule_op_t *op = &rule->operations[op_index];
+        int32_t cur = op->frame;
 
         /* If this is not the first operation and is also not a control flow
          * operation, push a new frame on the stack for the next operation */
-        if (!redo && op_index && !is_control_flow(op)) {
-            push_registers(it, last_index, op_index);
-            push_columns(it, last_index, op_index);
-            it->op_ctx[op_index].last_op = last_index;
+        if (!redo && !is_control_flow(op) && cur && cur != last_frame) {
+            int32_t prev = cur - 1;
+            push_registers(it, prev, cur);
+            push_columns(it, prev, cur);
+            push_sources(it, prev, cur);
         }
 
         /* Dispatch the operation */
         bool result = eval_op(it, op, op_index, redo);
         it->op = result ? op->on_pass : op->on_fail;
-        redo = !result;
 
         /* If the current operation is yield, return results */
         if (op->kind == EcsRuleYield) {
@@ -16899,15 +17128,13 @@ bool ecs_rule_next(
         if (op->kind == EcsRuleJump) {
             /* Label is stored in setjmp context */
             it->op = it->op_ctx[op->on_pass].is.setjmp.label;
+        }
 
-        /* The SetJmp sets the jump label and represents the first time that a
-         * a branch is evaluated, so always set redo to false */
-        } else if (op->kind == EcsRuleSetJmp) {
-            redo = false;
+        /* If jumping backwards, it's a redo */
+        redo = it->op <= op_index;
 
-        /* Store the index of the last non-control flow operation */
-        } else {
-            last_index = op_index;
+        if (!is_control_flow(op)) {
+            last_frame = op->frame;
         }
     } while (it->op != -1);
 
@@ -20293,18 +20520,30 @@ add_trait:
     group_table(world, query, &table_data);
 
     if (column_count) {
-        /* Array that contains the system column to table column mapping */
-        table_data.iter_data.columns = ecs_os_malloc(ECS_SIZEOF(int32_t) * column_count);
-        ecs_assert(table_data.iter_data.columns != NULL, ECS_OUT_OF_MEMORY, NULL);
+        /* Array that contains the query term to table column mapping */
+        table_data.iter_data.columns = ecs_os_malloc(
+            ECS_SIZEOF(int32_t) * column_count);
+        ecs_assert(table_data.iter_data.columns != NULL, 
+            ECS_OUT_OF_MEMORY, NULL);
 
-        /* Store the components of the matched table. In the case of OR expressions,
-        * components may differ per matched table. */
-        table_data.iter_data.components = ecs_os_malloc(ECS_SIZEOF(ecs_entity_t) * column_count);
-        ecs_assert(table_data.iter_data.components != NULL, ECS_OUT_OF_MEMORY, NULL);
+        /* Array that contains the entity sources for the different terms */
+        table_data.iter_data.sources = ecs_os_calloc(
+            ECS_SIZEOF(ecs_entity_t) * column_count);
+        ecs_assert(table_data.iter_data.sources != NULL, 
+            ECS_OUT_OF_MEMORY, NULL);
+
+        /* Store the components of the matched table. In the case of OR
+         * expressions, components may differ per matched table. */
+        table_data.iter_data.components = ecs_os_malloc(
+            ECS_SIZEOF(ecs_entity_t) * column_count);
+        ecs_assert(table_data.iter_data.components != NULL, 
+            ECS_OUT_OF_MEMORY, NULL);
 
         /* Also cache types, so no lookup is needed while iterating */
-        table_data.iter_data.types = ecs_os_malloc(ECS_SIZEOF(ecs_type_t) * column_count);
-        ecs_assert(table_data.iter_data.types != NULL, ECS_OUT_OF_MEMORY, NULL);        
+        table_data.iter_data.types = ecs_os_malloc(
+            ECS_SIZEOF(ecs_type_t) * column_count);
+        ecs_assert(table_data.iter_data.types != NULL, 
+            ECS_OUT_OF_MEMORY, NULL);        
     }
 
     /* Walk columns parsed from the system signature */
@@ -20391,7 +20630,13 @@ add_trait:
         if ((entity || table_data.iter_data.columns[c] == -1 || from == EcsCascade)) {
             references = add_ref(world, query, table_type, references, 
                 component, entity, from);
-            table_data.iter_data.columns[c] = -ecs_vector_count(references);
+
+            int32_t ref_elem = ecs_vector_count(references);
+            table_data.iter_data.columns[c] = -ref_elem;
+
+            ecs_ref_t *ref = ecs_vector_get(references, ecs_ref_t, ref_elem - 1);
+            ecs_assert(ref != NULL, ECS_INTERNAL_ERROR, NULL);
+            table_data.iter_data.sources[c] = ref->entity;
         }
 
         table_data.iter_data.components[c] = component;
@@ -21495,6 +21740,7 @@ void free_matched_table(
     ecs_os_free(table->iter_data.components);
     ecs_os_free((ecs_vector_t**)table->iter_data.types);
     ecs_os_free(table->iter_data.references);
+    ecs_os_free(table->iter_data.sources);
     ecs_os_free(table->sparse_columns);
     ecs_os_free(table->bitset_columns);
     ecs_os_free(table->monitor);
@@ -21550,11 +21796,13 @@ void resolve_cascade_container(
         /* If container was found, update the reference */
         if (container) {
             references[ref_index].entity = container;
+            table_data->iter_data.sources[column] = container;
             ecs_get_ref_w_id(
                 world, &references[ref_index], container, 
                 ref->component);
         } else {
             references[ref_index].entity = 0;
+            table_data->iter_data.sources[column] = 0;
         }
     }
 }
@@ -22636,7 +22884,7 @@ const EcsComponent* ecs_component_from_id(
     /* If this is a pair, get the pair component from the identifier */
     if (ECS_HAS_ROLE(e, PAIR)) {
         pair = e;
-        e = ECS_PAIR_RELATION(e);
+        e = ecs_get_alive(world, ECS_PAIR_RELATION(e));
     }
 
     const EcsComponent *component = ecs_get(world, e, EcsComponent);
@@ -24327,17 +24575,12 @@ ecs_entity_t ecs_term_source(
     ecs_assert(index <= it->column_count, ECS_INVALID_PARAMETER, NULL);
     ecs_assert(index > 0, ECS_INVALID_PARAMETER, NULL);
     ecs_assert(it->table != NULL, ECS_INTERNAL_ERROR, NULL);
-    ecs_assert(it->table->columns != NULL, ECS_INTERNAL_ERROR, NULL);
-
-    ecs_iter_table_t *table = it->table;
-    int32_t table_column = table->columns[index - 1];
-    if (table_column >= 0) {
+    
+    if (!it->table->sources) {
         return 0;
+    } else {
+        return it->table->sources[index - 1];
     }
-
-    ecs_assert(table->references != NULL, ECS_INTERNAL_ERROR, NULL);
-    ecs_ref_t *ref = &table->references[-table_column - 1];
-    return ref->entity;
 }
 
 ecs_id_t ecs_term_id(
