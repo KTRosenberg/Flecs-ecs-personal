@@ -16364,9 +16364,6 @@ bool eval_subset(
     ecs_sparse_t *table_set;
     ecs_table_t *table = NULL;
 
-    char buff[256];
-    ecs_entity_str(world, filter.mask, buff, 256);
-
     if (!redo) {
         op_ctx->stack = op_ctx->storage;
         sp = op_ctx->sp = 0;
@@ -16627,9 +16624,6 @@ bool eval_with(
     if (redo && !filter.wildcard) {
         return false;
     }
-
-    char buff[256];
-    ecs_entity_str(world, filter.mask, buff, 256);
 
     int32_t column = -1;
     ecs_table_t *table = NULL;
