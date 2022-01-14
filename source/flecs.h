@@ -4021,28 +4021,48 @@ FLECS_API extern const ecs_entity_t EcsWildcard;
 /* This entity (".", "This"). Used in expressions to indicate This entity */
 FLECS_API extern const ecs_entity_t EcsThis;
 
-/* Can be added to relation to indicate it is transitive. */
+/* Marks a relationship as transitive. 
+ * Behavior: 
+ *   if R(X, Y) and R(Y, Z) then R(X, Z)
+ */
 FLECS_API extern const ecs_entity_t EcsTransitive;
 
-/* Can be added to transitive relation to indicate it is inclusive. */
+/* Can be added to transitive relation to indicate it should match itself.
+ * Behavior: 
+ *   R(X, X) == true
+ */
 FLECS_API extern const ecs_entity_t EcsTransitiveSelf;
 
 /* Can be added to component/relation to indicate it is final. Final components/
  * relations cannot be derived from using an IsA relationship. Queries will not
  * attempt to substitute a component/relationship with IsA subsets if they are
- * final. */
+ * final. 
+ * 
+ * Behavior: 
+ *   if IsA(X, Y) and Final(Y) throw error
+ */
 FLECS_API extern const ecs_entity_t EcsFinal;
 
-/* Can be added to relation to indicate that it should never hold data, even
- * when it or the relation object is a component. */
-FLECS_API extern const ecs_entity_t EcsTag;
+/* Marks relationship as commutative.
+ * Behavior:
+ *   if R(X, Y) then R(Y, X)
+ */
+FLECS_API extern const ecs_entity_t EcsSymmetric;
 
 /* Can be added to relation to indicate that the relationship can only occur
- * once on an entity. Adding a 2nd instance will replace the 1st. */
+ * once on an entity. Adding a 2nd instance will replace the 1st. 
+ *
+ * Behavior:
+ *   R(X, Y) + R(X, Z) = R(X, Z)
+ */
 FLECS_API extern const ecs_entity_t EcsExclusive;
 
 /* Marks a relation as acyclic. Acyclic relations may not form cycles. */
 FLECS_API extern const ecs_entity_t EcsAcyclic;
+
+/* Can be added to relation to indicate that it should never hold data, even
+ * when it or the relation object is a component. */
+FLECS_API extern const ecs_entity_t EcsTag;
 
 /* Tag to indicate name identifier */
 FLECS_API extern const ecs_entity_t EcsName;
@@ -6192,6 +6212,9 @@ typedef struct ecs_event_desc_t {
     /* Table events apply to tables, not the entities in the table. When
      * enabled, (super)set triggers are not notified. */
     bool table_event;
+
+    /* When set, events will only be propagated by traversing the relation */
+    ecs_entity_t relation;
 } ecs_event_desc_t;
 
 /** Send event.
@@ -11585,6 +11608,7 @@ static const flecs::entity_t Final = EcsFinal;
 static const flecs::entity_t Tag = EcsTag;
 static const flecs::entity_t Exclusive = EcsExclusive;
 static const flecs::entity_t Acyclic = EcsAcyclic;
+static const flecs::entity_t Symmetric = EcsSymmetric;
 
 /* Builtin relationships */
 static const flecs::entity_t IsA = EcsIsA;
@@ -13638,6 +13662,23 @@ template <typename... Comps, typename... Args>
 flecs::rule_builder<Comps...> rule_builder(Args &&... args) const;
 
 #   endif
+#   ifdef FLECS_PLECS
+
+/** Load plecs string.
+ * @see ecs_plecs_from_str
+ */
+int plecs_from_str(const char *name, const char *str) const {
+    return ecs_plecs_from_str(m_world, name, str);
+}
+
+/** Load plecs from file.
+ * @see ecs_plecs_from_file
+ */
+int plecs_from_file(const char *filename) const {
+    return ecs_plecs_from_file(m_world, filename);
+}
+
+#   endif
 
 public:
     void init_builtin_components();
@@ -13933,6 +13974,13 @@ public:
      * @param index The term index.
      */
     flecs::entity id(int32_t index) const;
+
+    /** Convert current iterator result to string.
+     */
+    flecs::string str() const {
+        char *s = ecs_iter_str(m_iter);
+        return flecs::string(s);
+    }
 
     /** Obtain term with const type.
      * If the specified term index does not match with the provided type, the
@@ -16230,6 +16278,24 @@ struct iter_iterable final : iterable<Components...> {
         return *this;
     }
 #endif
+
+    // Return total number of entities in result.
+    int32_t count() {
+        int32_t result = 0;
+        while (m_next_each(&m_it)) {
+            result += m_it.count;
+        }
+        return result;
+    }
+
+    // Returns true if iterator yields at least once result.
+    bool is_true() {
+        bool result = m_next_each(&m_it);
+        if (result) {
+            ecs_iter_fini(&m_it);
+        }
+        return result;
+    }
 
 protected:
     ecs_iter_t get_iter() const {
