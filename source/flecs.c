@@ -7638,11 +7638,6 @@ bool ecs_is_valid(
     if (!entity) {
         return false;
     }
-
-    /* Entities should not contain data in dead zone bits */
-    if (entity & ~0xFF00FFFFFFFFFFFF) {
-        return false;
-    }
     
     /* Make sure we're not working with a stage */
     world = ecs_get_world(world);
@@ -7651,7 +7646,13 @@ bool ecs_is_valid(
      * stripped away. Just test if the entity is 0 or not. */
     if (ECS_HAS_ROLE(entity, PAIR)) {
         return ECS_PAIR_RELATION(entity) != 0;
-    } else
+    }
+
+    /* Entities should not contain data in dead zone bits */
+    if (entity & ~0xFF00FFFFFFFFFFFF) {
+        return false;
+    }
+
     if (entity & ECS_ROLE) {
         return ecs_entity_t_lo(entity) != 0;
     }
@@ -8931,6 +8932,15 @@ error:
     return false;
 }
 
+
+struct ecs_vector_t {
+    int32_t count;
+    int32_t size;
+    
+#ifndef NDEBUG
+    int64_t elem_size; /* Used in debug mode to validate size */
+#endif
+};
 
 /** Resize the vector buffer */
 static
@@ -12314,7 +12324,7 @@ void* _flecs_hashmap_get(
 flecs_hashmap_result_t _flecs_hashmap_ensure(
     const ecs_hashmap_t map,
     ecs_size_t key_size,
-    void *key,
+    const void *key,
     ecs_size_t value_size)
 {
     ecs_assert(map.key_size == key_size, ECS_INVALID_PARAMETER, NULL);
@@ -39040,8 +39050,8 @@ int32_t ensure_columns(
 }
 
 static
-ecs_type_t ids_to_type(
-    ecs_ids_t *entities)
+ecs_vector_t* ids_to_vector(
+    const ecs_ids_t *entities)
 {
     if (entities->count) {
         ecs_vector_t *result = NULL;
@@ -39186,10 +39196,8 @@ void init_flags(
 static
 void init_table(
     ecs_world_t *world,
-    ecs_table_t *table,
-    ecs_ids_t *entities)
+    ecs_table_t *table)
 {
-    table->type = ids_to_type(entities);
     table->c_info = NULL;
     table->flags = 0;
     table->dirty_state = NULL;
@@ -39214,14 +39222,18 @@ void init_table(
 static
 ecs_table_t *create_table(
     ecs_world_t *world,
-    ecs_ids_t *entities,
+    ecs_vector_t *type,
     flecs_hashmap_result_t table_elem)
 {
     ecs_table_t *result = flecs_sparse_add(world->store.tables, ecs_table_t);
     ecs_assert(result != NULL, ECS_INTERNAL_ERROR, NULL);
-    result->id = flecs_sparse_last_id(world->store.tables);
 
-    init_table(world, result, entities);
+    ecs_vector_reclaim(&type, ecs_id_t);
+
+    result->id = flecs_sparse_last_id(world->store.tables);
+    result->type = type;
+
+    init_table(world, result);
 
 #ifndef NDEBUG
     char *expr = ecs_type_str(world, result->type);
@@ -39248,6 +39260,43 @@ ecs_table_t *create_table(
     ecs_log_pop();
 
     return result;
+}
+
+static
+ecs_table_t* find_or_create(
+    ecs_world_t *world,
+    const ecs_ids_t *ids,
+    ecs_vector_t *type)
+{    
+    ecs_poly_assert(world, ecs_world_t);   
+
+    /* Make sure array is ordered and does not contain duplicates */
+    int32_t id_count = ids->count;
+
+    if (!id_count) {
+        return &world->store.root;
+    }
+
+    ecs_table_t *table;
+    flecs_hashmap_result_t elem = flecs_hashmap_ensure(
+        world->store.table_map, ids, ecs_table_t*);
+    if ((table = *(ecs_table_t**)elem.value)) {
+        if (type) {
+            ecs_vector_free(type);
+        }
+        return table;
+    }
+
+    if (!type) {
+        type = ids_to_vector(ids);
+    }
+
+    /* If we get here, table needs to be created which is only allowed when the
+     * application is not currently in progress */
+    ecs_assert(!world->is_readonly, ECS_INTERNAL_ERROR, NULL);
+
+    /* If we get here, the table has not been found, so create it. */
+    return create_table(world, type, elem);
 }
 
 static
@@ -39648,30 +39697,32 @@ ecs_table_t* find_or_create_table_with_id(
     } else {
         ecs_type_t type = node->type;
         ecs_entity_t r_exclusive = 0;
-        ecs_entity_t r = 0, o = 0;
+        ecs_entity_t r = 0, o = 0, re = 0;
 
         if (ECS_HAS_ROLE(id, PAIR)) {
-            r = ecs_pair_relation(world, id);
+            r = ECS_PAIR_RELATION(id);
             o = ECS_PAIR_OBJECT(id);
-            if (ecs_has_id(world, r, EcsExclusive)) {
-                r_exclusive = (uint32_t)r;
+            re = ecs_get_alive(world, r);
+            if (re && ecs_has_id(world, re, EcsExclusive)) {
+                r_exclusive = (uint32_t)re;
             }
         } else {
             r = id & ECS_COMPONENT_MASK;
+            re = ecs_get_alive(world, r);
         }
 
         ecs_vector_t *idv = ecs_vector_copy(type, ecs_id_t);
         add_id_to_ids(&idv, id, r_exclusive);
-        add_with_ids_to_ids(world, &idv, r, o);
+        if (re) {
+            add_with_ids_to_ids(world, &idv, re, o);
+        }
 
         ecs_ids_t ids = {
             .array = ecs_vector_first(idv, ecs_id_t),
             .count = ecs_vector_count(idv)
         };
 
-        ecs_table_t *result = flecs_table_find_or_create(world, &ids);
-        ecs_vector_free(idv);
-        return result;
+        return find_or_create(world, &ids, idv);
     }
 }
 
@@ -39883,110 +39934,12 @@ error:
     return NULL;
 }
 
-static
-bool ecs_entity_array_is_ordered(
-    const ecs_ids_t *entities)
-{
-    ecs_entity_t prev = 0;
-    ecs_entity_t *array = entities->array;
-    int32_t i, count = entities->count;
-
-    for (i = 0; i < count; i ++) {
-        if (!array[i] && !prev) {
-            continue;
-        }
-        if (array[i] <= prev) {
-            return false;
-        }
-        prev = array[i];
-    }    
-
-    return true;
-}
-
-static
-int32_t ecs_entity_array_dedup(
-    ecs_entity_t *array,
-    int32_t count)
-{
-    int32_t j, k;
-    ecs_entity_t prev = array[0];
-
-    for (k = j = 1; k < count; j ++, k++) {
-        ecs_entity_t e = array[k];
-        if (e == prev) {
-            k ++;
-        }
-
-        array[j] = e;
-        prev = e;
-    }
-
-    return count - (k - j);
-}
-
-static
-ecs_table_t* find_or_create(
-    ecs_world_t *world,
-    const ecs_ids_t *ids)
-{    
-    ecs_poly_assert(world, ecs_world_t);   
-
-    /* Make sure array is ordered and does not contain duplicates */
-    int32_t id_count = ids->count;
-    ecs_id_t *ordered = NULL;
-
-    if (!id_count) {
-        return &world->store.root;
-    }
-
-    if (!ecs_entity_array_is_ordered(ids)) {
-        if (id_count > world->store.id_cache.count) {
-            ecs_os_free(world->store.id_cache.array);
-            world->store.id_cache.array = ecs_os_malloc_n(ecs_id_t, id_count);
-            world->store.id_cache.count = id_count;
-        }
-
-        ordered = world->store.id_cache.array;
-        ecs_os_memcpy_n(ordered, ids->array, ecs_id_t, id_count);
-        qsort(ordered, (size_t)id_count, sizeof(ecs_entity_t), 
-            flecs_entity_compare_qsort);
-        id_count = ecs_entity_array_dedup(ordered, id_count);  
-    } else {
-        ordered = ids->array;
-    }
-
-    ecs_ids_t ordered_ids = {
-        .array = ordered,
-        .count = id_count
-    };
-
-    ecs_table_t *table;
-    flecs_hashmap_result_t elem = flecs_hashmap_ensure(
-        world->store.table_map, &ordered_ids, ecs_table_t*);
-    if ((table = *(ecs_table_t**)elem.value)) {
-        return table;
-    }
-
-    /* If we get here, table needs to be created which is only allowed when the
-     * application is not currently in progress */
-    ecs_assert(!world->is_readonly, ECS_INTERNAL_ERROR, NULL);
-
-    /* If we get here, the table has not been found, so create it. */
-    ecs_table_t *result = create_table(world, &ordered_ids, elem);
-    
-    ecs_assert(ordered_ids.count == ecs_vector_count(result->type), 
-        ECS_INTERNAL_ERROR, NULL);
-
-    return result;
-}
-
 ecs_table_t* flecs_table_find_or_create(
     ecs_world_t *world,
     const ecs_ids_t *ids)
 {
-    ecs_poly_assert(world, ecs_world_t);   
-    return find_or_create(world, ids);
+    ecs_poly_assert(world, ecs_world_t);
+    return find_or_create(world, ids, NULL);
 }
 
 void flecs_init_root_table(
@@ -39999,7 +39952,8 @@ void flecs_init_root_table(
         .count = 0
     };
 
-    init_table(world, &world->store.root, &entities);
+    world->store.root.type = ids_to_vector(&entities);
+    init_table(world, &world->store.root);
 
     /* Ensure table indices start at 1, as 0 is reserved for the root */
     uint64_t new_id = flecs_sparse_new_id(world->store.tables);
