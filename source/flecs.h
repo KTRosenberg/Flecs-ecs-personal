@@ -5257,16 +5257,34 @@ ecs_table_t* ecs_get_storage_table(
     const ecs_world_t *world,
     ecs_entity_t entity);
 
-/** Get the typeid of an entity.
+/** Get the type for an id.
+ * This operation returns the component id for an id, if the id is associated
+ * with a type. For a regular component with a non-zero size (an entity with the
+ * EcsComponent component) the operation will return the entity itself.
+ * 
+ * For an entity that does not have the EcsComponent component, or with an
+ * EcsComponent value with size 0, the operation will return 0.
+ * 
+ * For a pair id the operation will return the type associated with the pair, by
+ * applying the following rules in order:
+ * - The relation entity is returned if it is a component
+ * - 0 is returned if the relation entity has the Tag property
+ * - The object entity is returned if it is a component
+ * - 0 is returned.
  *
  * @param world The world.
- * @param entity The entity.
+ * @param id The id.
  * @return The typeid of the entity.
  */
 FLECS_API
 ecs_entity_t ecs_get_typeid(
     const ecs_world_t *world,
-    ecs_id_t entity);
+    ecs_id_t id);
+
+FLECS_API
+ecs_entity_t ecs_id_is_tag(
+    const ecs_world_t *world,
+    ecs_id_t id);
 
 /** Get the name of an entity.
  * This will return the name stored in (EcsIdentifier, EcsName).
@@ -8339,6 +8357,20 @@ typedef struct EcsDocDescription {
     const char *value;
 } EcsDocDescription;
 
+/** Add human-readable name to entity.
+ * Contrary to entity names, human readable names do not have to be unique and
+ * can contain special characters used in the query language like '*'.
+ * 
+ * @param world The world.
+ * @param entity The entity to which to add the name.
+ * @param name The name to add.
+ */
+FLECS_API
+void ecs_doc_set_name(
+    ecs_world_t *world,
+    ecs_entity_t entity,
+    const char *name);
+
 /** Add brief description to entity.
  * 
  * @param world The world.
@@ -8374,6 +8406,24 @@ void ecs_doc_set_link(
     ecs_world_t *world,
     ecs_entity_t entity,
     const char *link);
+
+/** Get human readable name from entity.
+ * If entity does not have an explicit human readable name, this operation will
+ * return the entity name.
+ * 
+ * To test if an entity has a human readable name, use:
+ *   ecs_has_pair(world, e, ecs_id(EcsDescription), EcsName);
+ * Or in C++:
+ *   e.has<flecs::Description>(flecs::Name);
+ * 
+ * @param world The world.
+ * @param entity The entity from which to get the name.
+ * @return The name.
+ */
+FLECS_API
+const char* ecs_doc_get_name(
+    const ecs_world_t *world,
+    ecs_entity_t entity);
 
 /** Get brief description from entity.
  * 
@@ -9492,11 +9542,11 @@ int ecs_meta_from_desc(
     FLECS_META_C_EXPORT extern ECS_COMPONENT_DECLARE(name);\
     static const char *FLECS__##name##_desc = type_desc;\
     static ecs_type_kind_t FLECS__##name##_kind = EcsEnumType;\
-    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name)
+    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name) = 0
 
 #define ECS_ENUM_DECLARE(name, type_desc)\
     FLECS_META_C_EXPORT extern ECS_COMPONENT_DECLARE(name);\
-    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name)
+    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name) = 0
 
 #define ECS_ENUM_EXTERN(name, type_desc)\
     FLECS_META_C_IMPORT extern ECS_COMPONENT_DECLARE(name)
@@ -9512,11 +9562,11 @@ int ecs_meta_from_desc(
     FLECS_META_C_EXPORT extern ECS_COMPONENT_DECLARE(name);\
     static const char *FLECS__##name##_desc = type_desc;\
     static ecs_type_kind_t FLECS__##name##_kind = EcsBitmaskType;\
-    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name)
+    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name) = 0
 
 #define ECS_BITMASK_DECLARE(name, type_desc)\
     FLECS_META_C_EXPORT extern ECS_COMPONENT_DECLARE(name);\
-    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name)
+    FLECS_META_C_EXPORT ECS_COMPONENT_DECLARE(name) = 0
 
 #define ECS_BITMASK_EXTERN(name, type_desc)\
     FLECS_META_C_IMPORT extern ECS_COMPONENT_DECLARE(name)
@@ -20684,6 +20734,10 @@ inline flecs::snapshot world::snapshot(Args &&... args) const {
 namespace flecs {
 namespace doc {
 
+inline const char* get_name(const flecs::entity_view& e) {
+    return ecs_doc_get_name(e.world(), e);
+}
+
 inline const char* get_brief(const flecs::entity_view& e) {
     return ecs_doc_get_brief(e.world(), e);
 }
@@ -20694,6 +20748,10 @@ inline const char* get_detail(const flecs::entity_view& e) {
 
 inline const char* get_link(const flecs::entity_view& e) {
     return ecs_doc_get_link(e.world(), e);
+}
+
+inline void set_name(flecs::entity& e, const char *name) {
+    ecs_doc_set_name(e.world(), e, name);
 }
 
 inline void set_brief(flecs::entity& e, const char *description) {
