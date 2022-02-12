@@ -342,9 +342,10 @@ typedef int32_t ecs_size_t;
 #define ecs_case(pred, obj) (ECS_CASE | ecs_entity_t_comb(obj, pred))
 
 /* Get object from pair with the correct (current) generation count */
-#define ecs_pair_relation(world, pair) ecs_get_alive(world, ECS_PAIR_RELATION(pair))
-#define ecs_pair_object(world, pair) ecs_get_alive(world, ECS_PAIR_OBJECT(pair))
-
+#define ecs_pair_first(world, pair) ecs_get_alive(world, ECS_PAIR_RELATION(pair))
+#define ecs_pair_second(world, pair) ecs_get_alive(world, ECS_PAIR_OBJECT(pair))
+#define ecs_pair_relation ecs_pair_first
+#define ecs_pair_object ecs_pair_second
 
 ////////////////////////////////////////////////////////////////////////////////
 //// Debug macro's
@@ -4329,6 +4330,15 @@ FLECS_API
 int ecs_fini(
     ecs_world_t *world);
 
+/** Returns whether the world is being deleted.
+ *
+ * @param world The world.
+ * @return True if being deleted, false if not.
+ */
+FLECS_API
+bool ecs_is_fini(
+    const ecs_world_t *world);
+
 /** Register action to be executed when world is destroyed.
  * Fini actions are typically used when a module needs to clean up before a
  * world shuts down.
@@ -5731,6 +5741,45 @@ FLECS_API
 const char* ecs_set_name_prefix(
     ecs_world_t *world,
     const char *prefix);    
+
+/** Set search path for lookup operations.
+ * This operation accepts an array of entity ids that will be used as search
+ * scopes by lookup operations. The operation returns the current search path.
+ * It is good practice to restore the old search path.
+ * 
+ * The search path will be evaluated starting from the last element.
+ * 
+ * The default search path includes flecs.core. When a custom search path is
+ * provided it overwrites the existing search path. Operations that rely on
+ * looking up names from flecs.core without providing the namespace may fail if
+ * the custom search path does not include flecs.core (EcsFlecsCore).
+ * 
+ * The search path array is not copied into managed memory. The application must
+ * ensure that the provided array is valid for as long as it is used as the
+ * search path.
+ * 
+ * The provided array must be terminated with a 0 element. This enables an
+ * application to push/pop elements to an existing array without invoking the
+ * ecs_set_lookup_path operation again.
+ * 
+ * @param world The world.
+ * @param lookup_path 0-terminated array with entity ids for the lookup path.
+ * @return Current lookup path array.
+ */
+FLECS_API
+ecs_entity_t* ecs_set_lookup_path(
+    ecs_world_t *world,
+    const ecs_entity_t *lookup_path);
+
+/** Get current lookup path.
+ * Returns value set by ecs_set_lookup_path.
+ * 
+ * @param world The world.
+ * @return The current lookup path.
+ */
+FLECS_API
+ecs_entity_t* ecs_get_lookup_path(
+    const ecs_world_t *world);
 
 /** @} */
 
@@ -8668,12 +8717,14 @@ typedef struct ecs_iter_to_json_desc_t {
     bool serialize_is_set;      /* Include is_set (for optional terms) */
     bool serialize_values;      /* Include component values */
     bool serialize_entities;    /* Include entities (for This terms) */
+    bool serialize_entity_labels; /* Include doc name for entities */
+    bool serialize_variable_labels; /* Include doc name for variables */
     bool measure_eval_duration; /* Include evaluation duration */
     bool serialize_type_info;   /* Include type information */
 } ecs_iter_to_json_desc_t;
 
 #define ECS_ITER_TO_JSON_INIT (ecs_iter_to_json_desc_t) {\
-    true, true, true, true, true, true, true, false, false }
+    true, true, true, true, true, true, true, false, false, false, false }
 
 /** Serialize iterator into JSON string.
  * This operation will iterate the contents of the iterator and serialize them
@@ -10922,7 +10973,7 @@ ecs_entity_t ecs_module_init(
     ecs_add(world, ecs_id(comp), comp)
 
 #define ecs_singleton_remove(world, comp)\
-    ecs_add(world, ecs_id(comp), comp)
+    ecs_remove(world, ecs_id(comp), comp)
 
 #define ecs_singleton_get(world, comp)\
     ecs_get(world, ecs_id(comp), comp)
@@ -11814,28 +11865,43 @@ struct enum_last {
 
 namespace _ {
 
+#ifdef ECS_TARGET_MSVC
+#define ECS_SIZE_T_STR "unsigned __int64"
+#elif defined(__clang__)
+#define ECS_SIZE_T_STR "size_t"
+#else
+#define ECS_SIZE_T_STR "constexpr size_t; size_t = long unsigned int"
+#endif
+
+template <typename E>
+constexpr size_t enum_type_len() {
+    return ECS_FUNC_TYPE_LEN(, enum_type_len, ECS_FUNC_NAME) 
+        - (sizeof(ECS_SIZE_T_STR) - 1u);
+}
+
 /** Test if value is valid for enumeration.
  * This function leverages that when a valid value is provided, 
  * __PRETTY_FUNCTION__ contains the enumeration name, whereas if a value is
  * invalid, the string contains a number. */
-#ifndef ECS_TARGET_MSVC
+#if defined(__clang__)
 template <typename E, E C>
 constexpr bool enum_constant_is_valid() {
     return !(
-        (ECS_FUNC_NAME[string::length(ECS_FUNC_NAME) - (ECS_FUNC_NAME_BACK + 1)] >= '0') &&
-        (ECS_FUNC_NAME[string::length(ECS_FUNC_NAME) - (ECS_FUNC_NAME_BACK + 1)] <= '9')
-    );
+        (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
+            enum_type_len<E>() + 6 /* ', C = ' */] >= '0') &&
+        (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
+            enum_type_len<E>() + 6 /* ', C = ' */] <= '9'));
+}
+#elif defined(__GNUC__)
+template <typename E, E C>
+constexpr bool enum_constant_is_valid() {
+    return (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(constepxr bool, enum_constant_is_valid) +
+        enum_type_len<E>() + 8 /* ', E C = ' */] != '(');
 }
 #else
 /* Use different trick on MSVC, since it uses hexadecimal representation for
  * invalid enum constants. We can leverage that msvc inserts a C-style cast
  * into the name, and the location of its first character ('(') is known. */
-template <typename E>
-constexpr size_t enum_type_len() {
-    return ECS_FUNC_TYPE_LEN(, enum_type_len, ECS_FUNC_NAME) 
-        - (sizeof("unsigned __int64") - 1u);
-}
-
 template <typename E, E C>
 constexpr bool enum_constant_is_valid() {
     return ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
@@ -11876,18 +11942,28 @@ template <typename E>
 struct enum_type {
     static enum_data_impl data;
 
-    static enum_type<E>& get(flecs::world_t *world) {
-        flecs::entity_t enum_id = _::cpp_type<E>::id(world);
-        return get(world, enum_id);
-    }
-
-    static enum_type<E>& get(flecs::world_t *world, flecs::entity_t enum_id) {
-        static _::enum_type<E> instance(world, enum_id);
+    static enum_type<E>& get() {
+        static _::enum_type<E> instance;
         return instance;
     }
 
     flecs::entity_t entity(E value) const {
         return data.constants[static_cast<int>(value)].id;
+    }
+
+    void init(flecs::world_t *world, flecs::entity_t id) {
+#if !defined(__clang__) && defined(__GNUC__)
+        ecs_assert(__GNUC__ > 7 || (__GNUC__ == 7 && __GNUC_MINOR__ >= 5), 
+            ECS_UNSUPPORTED, "enum component types require gcc 7.5 or higher");
+#endif
+
+        ecs_log_push();
+        ecs_add_id(world, id, flecs::Exclusive);
+        ecs_add_id(world, id, flecs::Tag);
+        data.id = id;
+        data.min = FLECS_ENUM_MAX(int);
+        init< enum_last<E>::value >(world);
+        ecs_log_pop();
     }
 
 private:
@@ -11930,14 +12006,6 @@ private:
             init<from_int<to_int<Value>() - is_not_0<Value>()>()>(world);
         }
     }
-
-    enum_type(flecs::world_t *world, flecs::entity_t id) {
-        ecs_add_id(world, id, flecs::Exclusive);
-        ecs_add_id(world, id, flecs::Tag);
-        data.id = id;
-        data.min = FLECS_ENUM_MAX(int);
-        init< enum_last<E>::value >(world);
-    }
 };
 
 template <typename E>
@@ -11945,7 +12013,7 @@ enum_data_impl enum_type<E>::data;
 
 template <typename E, if_t< is_enum<E>::value > = 0>
 inline static void init_enum(flecs::world_t *world, flecs::entity_t id) {
-    _::enum_type<E>::get(world, id);
+    _::enum_type<E>::get().init(world, id);
 }
 
 template <typename E, if_not_t< is_enum<E>::value > = 0>
@@ -11976,9 +12044,9 @@ struct enum_data {
         return impl_.constants[cur].next;
     }
 
-    flecs::entity entity();
-    flecs::entity entity(int value);
-    flecs::entity entity(E value);
+    flecs::entity entity() const;
+    flecs::entity entity(int value) const;
+    flecs::entity entity(E value) const;
 
     flecs::world_t *world_;
     _::enum_data_impl& impl_;
@@ -11987,7 +12055,8 @@ struct enum_data {
 /** Convenience function for getting enum reflection data */
 template <typename E>
 enum_data<E> enum_type(flecs::world_t *world) {
-    auto& ref = _::enum_type<E>::get(world, _::cpp_type<E>::id(world));
+    _::cpp_type<E>::id(world); // Ensure enum is registered
+    auto& ref = _::enum_type<E>::get();
     return enum_data<E>(world, ref.data);
 }
 
@@ -12686,6 +12755,7 @@ static const flecs::entity_t Iptr = ecs_id(ecs_iptr_t);
 static const flecs::entity_t F32 = ecs_id(ecs_f32_t);
 static const flecs::entity_t F64 = ecs_id(ecs_f64_t);
 static const flecs::entity_t String = ecs_id(ecs_string_t);
+static const flecs::entity_t Entity = ecs_id(ecs_entity_t);
 
 static const flecs::entity_t Constant = EcsConstant;
 
@@ -12796,6 +12866,13 @@ inline void enable_colors(bool enabled) {
     ecs_log_enable_colors(enabled);
 }
 
+inline void dbg(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    ecs_logv(1, fmt, args);
+    va_end(args);
+}
+
 inline void trace(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -12815,6 +12892,14 @@ inline void err(const char *fmt, ...) {
     va_start(args, fmt);
     ecs_logv(-3, fmt, args);
     va_end(args);
+}
+
+inline void push() {
+    ecs_log_push();
+}
+
+inline void pop() {
+    ecs_log_pop();
 }
 
 }
@@ -13866,19 +13951,28 @@ struct world {
      *
      * @param scope The scope to set.
      * @return The current scope;
+     * @see ecs_set_scope
      */
     flecs::entity set_scope(const flecs::entity_t scope) const;
 
     /** Get current scope.
      *
      * @return The current scope.
+     * * @see ecs_get_scope
      */
     flecs::entity get_scope() const;
 
     /** Same as set_scope but with type.
+     * * @see ecs_set_scope
      */
     template <typename T>
     flecs::entity set_scope() const;
+
+    /** Set search path.
+     */
+    flecs::entity_t* set_lookup_path(const flecs::entity_t *search_path) {
+        return ecs_set_lookup_path(m_world, search_path);
+    }
 
     /** Lookup entity by name.
      * 
@@ -15529,7 +15623,7 @@ struct entity_view : public id {
     template <typename E, if_t< is_enum<E>::value > = 0>
     bool has(E value) const {
         auto r = _::cpp_type<E>::id(m_world);
-        auto o = _::enum_type<E>::get(m_world).entity(value);
+        auto o = enum_type<E>(m_world).entity(value);
         return ecs_has_pair(m_world, m_id, r, o);
     }
 
@@ -15701,6 +15795,8 @@ struct entity_view : public id {
         const ecs_world_info_t *stats = ecs_get_world_info(m_world);
         return stats->delta_time;
     }
+
+    flecs::entity clone(bool clone_value = true, flecs::entity_t dst_id = 0) const;
 
     /** Return mutable entity handle for current stage 
      * When an entity handle created from the world is used while the world is
@@ -16087,7 +16183,7 @@ struct entity_builder : entity_view {
     template <typename E, if_t< is_enum<E>::value > = 0>
     Self& add(E value) {
         flecs::entity_t r = _::cpp_type<E>::id(this->m_world);
-        const auto& et = _::enum_type<E>::get(this->m_world, r);
+        const auto& et = enum_type<E>(this->m_world);
         flecs::entity_t o = et.entity(value);
         return this->add(r, o);
     }
@@ -17399,7 +17495,7 @@ worker_iterable<Components...> iterable<Components...>::worker(
 }
 
 #pragma once
-
+#include <stdio.h>
 #include <ctype.h>
 
 namespace flecs {
@@ -18365,6 +18461,16 @@ inline flecs::entity entity_view::lookup(const char *path) const {
     return flecs::entity(m_world, id);
 }
 
+inline flecs::entity entity_view::clone(bool copy_value, flecs::entity_t dst_id) const {
+    if (!dst_id) {
+        dst_id = ecs_new_id(m_world);
+    }
+
+    flecs::entity dst = flecs::entity(m_world, dst_id);
+    ecs_clone(m_world, dst_id, m_id, copy_value);
+    return dst;
+}
+
 // Entity mixin implementation
 template <typename... Args>
 inline flecs::entity world::entity(Args &&... args) const {
@@ -18373,7 +18479,7 @@ inline flecs::entity world::entity(Args &&... args) const {
 
 template <typename E, if_t< is_enum<E>::value >>
 inline flecs::entity world::id(E value) const {
-    flecs::entity_t constant = _::enum_type<E>::get(m_world).entity(value);
+    flecs::entity_t constant = enum_type<E>(m_world).entity(value);
     return flecs::entity(m_world, constant);
 }
 
@@ -19151,7 +19257,7 @@ struct filter_builder_i : term_builder_i<Base> {
     template <typename E, if_t< is_enum<E>::value > = 0>
     Base& term(E value) {
         flecs::entity_t r = _::cpp_type<E>::id(this->world_v());
-        auto o = _::enum_type<E>::get(this->world_v()).entity(value);
+        auto o = enum_type<E>(this->world_v()).entity(value);
         return term(r, o);
     }
 
@@ -21226,17 +21332,17 @@ inline flecs::entity world::ensure(flecs::entity_t e) const {
 #endif
 
 template <typename E>
-inline flecs::entity enum_data<E>::entity() {
+inline flecs::entity enum_data<E>::entity() const {
     return flecs::entity(world_, impl_.id);
 }
 
 template <typename E>
-inline flecs::entity enum_data<E>::entity(int value) {
+inline flecs::entity enum_data<E>::entity(int value) const {
     return flecs::entity(world_, impl_.constants[value].id);
 }
 
 template <typename E>
-inline flecs::entity enum_data<E>::entity(E value) {
+inline flecs::entity enum_data<E>::entity(E value) const {
     return flecs::entity(world_, impl_.constants[static_cast<int>(value)].id);
 }
 
