@@ -322,35 +322,6 @@ typedef int32_t ecs_size_t;
 
 
 ////////////////////////////////////////////////////////////////////////////////
-//// Flags for quickly querying properties of component/relation id
-////////////////////////////////////////////////////////////////////////////////
-
-#define ECS_ID_ON_DELETE_REMOVE          (1u << 0)
-#define ECS_ID_ON_DELETE_DELETE          (1u << 1)
-#define ECS_ID_ON_DELETE_THROW           (1u << 2)
-#define ECS_ID_ON_DELETE_MASK\
-    (ECS_ID_ON_DELETE_THROW|ECS_ID_ON_DELETE_REMOVE|ECS_ID_ON_DELETE_DELETE)
-
-#define ECS_ID_ON_DELETE_OBJECT_REMOVE   (1u << 3)
-#define ECS_ID_ON_DELETE_OBJECT_DELETE   (1u << 4)
-#define ECS_ID_ON_DELETE_OBJECT_THROW    (1u << 5)
-#define ECS_ID_ON_DELETE_OBJECT_MASK\
-    (ECS_ID_ON_DELETE_OBJECT_THROW|ECS_ID_ON_DELETE_OBJECT_REMOVE|\
-        ECS_ID_ON_DELETE_OBJECT_DELETE)
-
-#define ECS_ID_EXCLUSIVE                 (1u << 6)
-#define ECS_ID_DONT_INHERIT              (1u << 7)
-
-/* Utilities for converting from flags to delete policies and vice versa */
-#define ECS_ID_ON_DELETE(flags) \
-    ((ecs_entity_t[]){0, EcsRemove, EcsDelete, 0, EcsThrow}\
-        [((flags) & ECS_ID_ON_DELETE_MASK)])
-#define ECS_ID_ON_DELETE_OBJECT(flags) ECS_ID_ON_DELETE(flags >> 3)
-#define ECS_ID_ON_DELETE_FLAG(id) (1u << ((id) - EcsRemove))
-#define ECS_ID_ON_DELETE_OBJECT_FLAG(id) (1u << (3 + ((id) - EcsRemove)))
-
-
-////////////////////////////////////////////////////////////////////////////////
 //// Convert between C typenames and variables
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -373,13 +344,8 @@ typedef int32_t ecs_size_t;
 #define ecs_case(pred, obj) (ECS_CASE | ecs_entity_t_comb(obj, pred))
 
 /* Get object from pair with the correct (current) generation count */
-<<<<<<< HEAD
 #define ecs_pair_first(world, pair) ecs_get_alive(world, ECS_PAIR_FIRST(pair))
 #define ecs_pair_second(world, pair) ecs_get_alive(world, ECS_PAIR_SECOND(pair))
-=======
-#define ecs_pair_first(world, pair) ecs_get_alive(world, ECS_PAIR_RELATION(pair))
-#define ecs_pair_second(world, pair) ecs_get_alive(world, ECS_PAIR_OBJECT(pair))
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
 #define ecs_pair_relation ecs_pair_first
 #define ecs_pair_object ecs_pair_second
 
@@ -2833,8 +2799,6 @@ struct ecs_observer_t {
     int32_t event_count;   
     
     ecs_iter_action_t callback; /* See ecs_observer_desc_t::callback */
-    ecs_run_action_t run;       /* See ecs_observer_desc_t::run */
-
     ecs_run_action_t run;       /* See ecs_observer_desc_t::run */
 
     void *ctx;                  /* Callback context */
@@ -11385,7 +11349,6 @@ ecs_entity_t ecs_module_init(
  */
 
 #ifdef FLECS_CPP
-<<<<<<< HEAD
 
 #ifndef FLECS_CPP_H
 #define FLECS_CPP_H
@@ -11602,349 +11565,6 @@ static const uint8_t Parent = EcsParent;
 
 /* Builtin tag ids */
 static const flecs::entity_t Private = EcsPrivate;
-static const flecs::entity_t Module = EcsModule;
-static const flecs::entity_t Prefab = EcsPrefab;
-static const flecs::entity_t Disabled = EcsDisabled;
-static const flecs::entity_t Inactive = EcsInactive;
-static const flecs::entity_t Monitor = EcsMonitor;
-static const flecs::entity_t Pipeline = EcsPipeline;
-
-/* Trigger tags */
-static const flecs::entity_t OnAdd = EcsOnAdd;
-static const flecs::entity_t OnRemove = EcsOnRemove;
-static const flecs::entity_t OnSet = EcsOnSet;
-static const flecs::entity_t UnSet = EcsUnSet;
-
-/** Builtin roles */
-static const flecs::entity_t Pair = ECS_PAIR;
-static const flecs::entity_t Switch = ECS_SWITCH;
-static const flecs::entity_t Case = ECS_CASE;
-static const flecs::entity_t Override = ECS_OVERRIDE;
-
-/* Builtin entity ids */
-static const flecs::entity_t Flecs = EcsFlecs;
-static const flecs::entity_t FlecsCore = EcsFlecsCore;
-static const flecs::entity_t World = EcsWorld;
-
-/* Relation properties */
-static const flecs::entity_t Wildcard = EcsWildcard;
-static const flecs::entity_t This = EcsThis;
-static const flecs::entity_t Transitive = EcsTransitive;
-static const flecs::entity_t Reflexive = EcsReflexive;
-static const flecs::entity_t Final = EcsFinal;
-static const flecs::entity_t DontInherit = EcsDontInherit;
-static const flecs::entity_t Tag = EcsTag;
-static const flecs::entity_t Exclusive = EcsExclusive;
-static const flecs::entity_t Acyclic = EcsAcyclic;
-static const flecs::entity_t Symmetric = EcsSymmetric;
-static const flecs::entity_t With = EcsWith;
-
-/* Builtin relationships */
-static const flecs::entity_t IsA = EcsIsA;
-static const flecs::entity_t ChildOf = EcsChildOf;
-
-/* Builtin identifiers */
-static const flecs::entity_t Name = EcsName;
-static const flecs::entity_t Symbol = EcsSymbol;
-
-/* Cleanup policies */
-static const flecs::entity_t OnDelete = EcsOnDelete;
-static const flecs::entity_t OnDeleteObject = EcsOnDeleteObject;
-static const flecs::entity_t Remove = EcsRemove;
-static const flecs::entity_t Delete = EcsDelete;
-static const flecs::entity_t Throw = EcsThrow;
-
-}
-
-
-// C++ utilities
-////////////////////////////////////////////////////////////////////////////////
-//// Flecs STL (FTL?)
-//// Minimalistic utilities that allow for STL like functionality without having
-//// to depend on the actual STL.
-////////////////////////////////////////////////////////////////////////////////
-
-// Macros so that C++ new calls can allocate using ecs_os_api memory allocation functions
-// Rationale:
-//  - Using macros here instead of a templated function bc clients might override ecs_os_malloc
-//    to contain extra debug info like source tracking location. Using a template function
-//    in that scenario would collapse all source location into said function vs. the
-//    actual call site
-//  - FLECS_PLACEMENT_NEW(): exists to remove any naked new calls/make it easy to identify any regressions
-//    by grepping for new/delete
-
-#define FLECS_PLACEMENT_NEW(_ptr, _type)  ::new(flecs::_::placement_new_tag, _ptr) _type
-#define FLECS_NEW(_type)                  FLECS_PLACEMENT_NEW(ecs_os_malloc(sizeof(_type)), _type)
-#define FLECS_DELETE(_ptr)          \
-  do {                              \
-    if (_ptr) {                     \
-      flecs::_::destruct_obj(_ptr); \
-      ecs_os_free(_ptr);            \
-    }                               \
-  } while (false)
-
-/* Faster (compile time) alternatives to std::move / std::forward. From:
- *   https://www.foonathan.net/2020/09/move-forward/
- */
-
-#define FLECS_MOV(...) \
-  static_cast<flecs::remove_reference_t<decltype(__VA_ARGS__)>&&>(__VA_ARGS__)
-
-#define FLECS_FWD(...) \
-  static_cast<decltype(__VA_ARGS__)&&>(__VA_ARGS__)
-
-namespace flecs 
-{
-
-namespace _
-{
-
-// Dummy Placement new tag to disambiguate from any other operator new overrides
-struct placement_new_tag_t{};
-constexpr placement_new_tag_t placement_new_tag{};
-template<class Ty> inline void destruct_obj(Ty* _ptr) { _ptr->~Ty(); }
-template<class Ty> inline void free_obj(Ty* _ptr) { 
-    if (_ptr) {
-        destruct_obj(_ptr); 
-        ecs_os_free(_ptr); 
-    }
-}
-
-} // namespace _
-
-} // namespace flecs
-
-// Allows overriding flecs_static_assert, which is useful when testing
-#ifndef flecs_static_assert
-#define flecs_static_assert(cond, str) static_assert(cond, str)
-#endif
-=======
-
-#ifndef FLECS_CPP_H
-#define FLECS_CPP_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#if defined(__clang__)
-#define ECS_FUNC_NAME_FRONT(type, name) ((sizeof(#type) + sizeof(" flecs::_::() [T = ") + sizeof(#name)) - 3u)
-#define ECS_FUNC_NAME_BACK (sizeof("]") - 1u)
-#define ECS_FUNC_NAME __PRETTY_FUNCTION__
-#elif defined(__GNUC__)
-#define ECS_FUNC_NAME_FRONT(type, name) ((sizeof(#type) + sizeof(" flecs::_::() [with T = ") + sizeof(#name)) - 3u)
-#define ECS_FUNC_NAME_BACK (sizeof("]") - 1u)
-#define ECS_FUNC_NAME __PRETTY_FUNCTION__
-#elif defined(_WIN32)
-#define ECS_FUNC_NAME_FRONT(type, name) ((sizeof(#type) + sizeof(" __cdecl flecs::_::<") + sizeof(#name)) - 3u)
-#define ECS_FUNC_NAME_BACK (sizeof(">(void)") - 1u)
-#define ECS_FUNC_NAME __FUNCSIG__
-#else
-#error "implicit component registration not supported"
-#endif
-
-#define ECS_FUNC_TYPE_LEN(type, name, str)\
-    (flecs::string::length(str) - (ECS_FUNC_NAME_FRONT(type, name) + ECS_FUNC_NAME_BACK))
-
-FLECS_API
-char* ecs_cpp_get_type_name(
-    char *type_name, 
-    const char *func_name,
-    size_t len);
-
-FLECS_API
-char* ecs_cpp_get_symbol_name(
-    char *symbol_name,
-    const char *type_name,
-    size_t len);
-
-FLECS_API
-char* ecs_cpp_get_constant_name(
-    char *constant_name,
-    const char *func_name,
-    size_t len);
-
-FLECS_API
-const char* ecs_cpp_trim_module(
-    ecs_world_t *world,
-    const char *type_name);
-
-FLECS_API
-void ecs_cpp_component_validate(
-    ecs_world_t *world,
-    ecs_entity_t id,
-    const char *name,
-    size_t size,
-    size_t alignment,
-    bool implicit_name);
-
-FLECS_API
-ecs_entity_t ecs_cpp_component_register(
-    ecs_world_t *world,
-    ecs_entity_t id,
-    const char *name,
-    const char *symbol,
-    ecs_size_t size,
-    ecs_size_t alignment);
-
-FLECS_API
-ecs_entity_t ecs_cpp_component_register_explicit(
-    ecs_world_t *world,
-    ecs_entity_t s_id,
-    ecs_entity_t id,
-    const char *name,
-    const char *type_name,
-    const char *symbol,
-    size_t size,
-    size_t alignment);
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
-
-FLECS_API
-ecs_entity_t ecs_cpp_enum_constant_register(
-    ecs_world_t *world,
-    ecs_entity_t parent,
-    ecs_entity_t id,
-    const char *name,
-    int value);
-
-FLECS_API 
-int32_t ecs_cpp_reset_count_get(void);
-
-FLECS_API
-int32_t ecs_cpp_reset_count_inc(void);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // FLECS_CPP_H
-
-#endif // FLECS_CPP
-
-#endif
-
-#ifdef __cplusplus
-}
-
-<<<<<<< HEAD
-using std::is_base_of;
-using std::is_empty;
-using std::is_const;
-using std::is_pointer;
-using std::is_reference;
-using std::is_volatile;
-using std::is_same;
-using std::is_enum;
-=======
-#ifdef FLECS_CPP
-/**
- * @file flecs.hpp
- * @brief Flecs C++ API.
- *
- * Modern C++11 API
- */
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
-
-#pragma once
-
-// STL includes
-#include <type_traits>
-
-// Forward declarations
-namespace flecs 
-{
-
-struct world;
-struct world_async_stage;
-struct iter;
-struct entity_view;
-struct entity;
-struct untyped_component;
-
-template <typename T>
-struct component;
-
-namespace _ 
-{
-template <typename T, typename U = int>
-struct cpp_type;
-
-template <typename Func, typename ... Components>
-struct each_invoker;
-
-} // namespace _
-} // namespace flecs
-
-// Types imported from C API
-////////////////////////////////////////////////////////////////////////////////
-//// Aliases for types/constants from C API
-////////////////////////////////////////////////////////////////////////////////
-
-namespace flecs {
-
-using world_t = ecs_world_t;
-using id_t = ecs_id_t;
-using ids_t = ecs_ids_t;
-using entity_t = ecs_entity_t;
-using type_t = ecs_type_t;
-using table_t = ecs_table_t;
-using filter_t = ecs_filter_t;
-using query_t = ecs_query_t;
-using rule_t = ecs_rule_t;
-using ref_t = ecs_ref_t;
-using iter_t = ecs_iter_t;
-using ComponentLifecycle = EcsComponentLifecycle;
-
-enum inout_kind_t {
-    InOutDefault = EcsInOutDefault,
-    InOutFilter = EcsInOutFilter,
-    InOut = EcsInOut,
-    In = EcsIn,
-    Out = EcsOut
-};
-
-enum oper_kind_t {
-    And = EcsAnd,
-    Or = EcsOr,
-    Not = EcsNot,
-    Optional = EcsOptional,
-    AndFrom = EcsAndFrom,
-    OrFrom = EcsOrFrom,
-    NotFrom = EcsNotFrom
-};
-
-enum var_kind_t {
-    VarDefault = EcsVarDefault,
-    VarIsEntity = EcsVarIsEntity,
-    VarIsVariable = EcsVarIsVariable
-};
-
-////////////////////////////////////////////////////////////////////////////////
-//// Builtin components and tags 
-////////////////////////////////////////////////////////////////////////////////
-
-/* Builtin components */
-using Component = EcsComponent;
-using Type = EcsType;
-using Identifier = EcsIdentifier;
-using Query = EcsQuery;
-using Trigger = EcsTrigger;
-using Observer = EcsObserver;
-
-/* Builtin opaque components */
-static const flecs::entity_t System = ecs_id(EcsSystem);
-
-/* Builtin set constants */
-static const uint8_t DefaultSet = EcsDefaultSet;
-static const uint8_t Self = EcsSelf;
-static const uint8_t SuperSet = EcsSuperSet;
-static const uint8_t SubSet = EcsSubSet;
-static const uint8_t Cascade = EcsCascade;
-static const uint8_t All = EcsAll;
-static const uint8_t Nothing = EcsNothing;
-static const uint8_t Parent = EcsParent;
-
-/* Builtin tag ids */
 static const flecs::entity_t Module = EcsModule;
 static const flecs::entity_t Prefab = EcsPrefab;
 static const flecs::entity_t Disabled = EcsDisabled;
@@ -12596,253 +12216,6 @@ struct enum_data {
         return impl_.min;
     }
 
-<<<<<<< HEAD
-    template <size_t N>
-    static constexpr size_t length( char const (&)[N] ) {
-        return N - 1;
-    }
-
-    std::size_t size() {
-        return length();
-=======
-    int last() {
-        return impl_.max;
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
-    }
-
-    int next(int cur) {
-        return impl_.constants[cur].next;
-    }
-
-    flecs::entity entity() const;
-    flecs::entity entity(int value) const;
-    flecs::entity entity(E value) const;
-
-    flecs::world_t *world_;
-    _::enum_data_impl& impl_;
-};
-
-/** Convenience function for getting enum reflection data */
-template <typename E>
-enum_data<E> enum_type(flecs::world_t *world) {
-    _::cpp_type<E>::id(world); // Ensure enum is registered
-    auto& ref = _::enum_type<E>::get();
-    return enum_data<E>(world, ref.data);
-}
-
-<<<<<<< HEAD
-#include <string.h>
-
-#define FLECS_ENUM_MAX(T) _::to_constant<T, 128>::value
-#define FLECS_ENUM_MAX_COUNT (FLECS_ENUM_MAX(int) + 1)
-
-namespace flecs {
-
-/** Int to enum */
-namespace _ {
-template <typename E, int Value>
-struct to_constant {
-    static constexpr E value = static_cast<E>(Value);
-};
-
-template <typename E, int Value>
-constexpr E to_constant<E, Value>::value;
-}
-
-/** Convenience type with enum reflection data */
-template <typename E>
-struct enum_data;
-
-template <typename E>
-static enum_data<E> enum_type(flecs::world_t *world);
-
-template <typename E>
-struct enum_last {
-    static constexpr E value = FLECS_ENUM_MAX(E);
-};
-
-/* Utility macro to override enum_last trait */
-#define FLECS_ENUM_LAST(T, Last)\
-    namespace flecs {\
-    template<>\
-    struct enum_last<T> {\
-        static constexpr T value = Last;\
-    };\
-    }
-
-namespace _ {
-
-#ifdef ECS_TARGET_MSVC
-#define ECS_SIZE_T_STR "unsigned __int64"
-#elif defined(__clang__)
-#define ECS_SIZE_T_STR "size_t"
-#else
-#define ECS_SIZE_T_STR "constexpr size_t; size_t = long unsigned int"
-#endif
-
-template <typename E>
-constexpr size_t enum_type_len() {
-    return ECS_FUNC_TYPE_LEN(, enum_type_len, ECS_FUNC_NAME) 
-        - (sizeof(ECS_SIZE_T_STR) - 1u);
-}
-
-/** Test if value is valid for enumeration.
- * This function leverages that when a valid value is provided, 
- * __PRETTY_FUNCTION__ contains the enumeration name, whereas if a value is
- * invalid, the string contains a number. */
-#if defined(__clang__)
-template <typename E, E C>
-constexpr bool enum_constant_is_valid() {
-    return !(
-        (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
-            enum_type_len<E>() + 6 /* ', C = ' */] >= '0') &&
-        (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
-            enum_type_len<E>() + 6 /* ', C = ' */] <= '9'));
-}
-#elif defined(__GNUC__)
-template <typename E, E C>
-constexpr bool enum_constant_is_valid() {
-    return (ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(constepxr bool, enum_constant_is_valid) +
-        enum_type_len<E>() + 8 /* ', E C = ' */] != '(');
-}
-#else
-/* Use different trick on MSVC, since it uses hexadecimal representation for
- * invalid enum constants. We can leverage that msvc inserts a C-style cast
- * into the name, and the location of its first character ('(') is known. */
-template <typename E, E C>
-constexpr bool enum_constant_is_valid() {
-    return ECS_FUNC_NAME[ECS_FUNC_NAME_FRONT(bool, enum_constant_is_valid) +
-        enum_type_len<E>() + 1] != '(';
-}
-#endif
-
-template <typename E, E C>
-struct enum_is_valid {
-    static constexpr bool value = enum_constant_is_valid<E, C>();
-};
-
-/** Extract name of constant from string */
-template <typename E, E C>
-static const char* enum_constant_to_name() {
-    static const size_t len = ECS_FUNC_TYPE_LEN(const char*, enum_constant_to_name, ECS_FUNC_NAME);
-    static char result[len + 1] = {};
-    return ecs_cpp_get_constant_name(
-        result, ECS_FUNC_NAME, string::length(ECS_FUNC_NAME));
-}
-
-/** Enumeration constant data */
-struct enum_constant_data {
-    flecs::entity_t id;
-    int next;
-};
-
-/** Enumeration type data */
-struct enum_data_impl {
-    flecs::entity_t id;
-    int min;
-    int max;
-    enum_constant_data constants[FLECS_ENUM_MAX_COUNT];
-};
-
-/** Class that scans an enum for constants, extracts names & creates entities */
-template <typename E>
-struct enum_type {
-    static enum_data_impl data;
-
-    static enum_type<E>& get() {
-        static _::enum_type<E> instance;
-        return instance;
-    }
-
-    flecs::entity_t entity(E value) const {
-        return data.constants[static_cast<int>(value)].id;
-    }
-
-    void init(flecs::world_t *world, flecs::entity_t id) {
-#if !defined(__clang__) && defined(__GNUC__)
-        ecs_assert(__GNUC__ > 7 || (__GNUC__ == 7 && __GNUC_MINOR__ >= 5), 
-            ECS_UNSUPPORTED, "enum component types require gcc 7.5 or higher");
-#endif
-
-        ecs_log_push();
-        ecs_add_id(world, id, flecs::Exclusive);
-        ecs_add_id(world, id, flecs::Tag);
-        data.id = id;
-        data.min = FLECS_ENUM_MAX(int);
-        init< enum_last<E>::value >(world);
-        ecs_log_pop();
-    }
-
-private:
-    template <E Value>
-    static constexpr int to_int() {
-        return static_cast<int>(Value);
-    }
-
-    template <int Value>
-    static constexpr E from_int() {
-        return to_constant<E, Value>::value;
-    }
-
-    template <E Value>
-    static constexpr int is_not_0() {
-        return static_cast<int>(Value != from_int<0>());
-    }
-
-    template <E Value, flecs::if_not_t< enum_constant_is_valid<E, Value>() > = 0>
-    static void init_constant(flecs::world_t*) { }
-
-    template <E Value, flecs::if_t< enum_constant_is_valid<E, Value>() > = 0>
-    static void init_constant(flecs::world_t *world) {
-        int v = to_int<Value>();
-        const char *name = enum_constant_to_name<E, Value>();
-        data.constants[v].next = data.min;
-        data.min = v;
-        if (!data.max) {
-            data.max = v;
-        }
-
-        data.constants[v].id = ecs_cpp_enum_constant_register(
-            world, data.id, data.constants[v].id, name, v);
-    }
-
-    template <E Value = FLECS_ENUM_MAX(E) >
-    static void init(flecs::world_t *world) {
-        init_constant<Value>(world);
-        if (is_not_0<Value>()) {
-            init<from_int<to_int<Value>() - is_not_0<Value>()>()>(world);
-        }
-    }
-};
-
-template <typename E>
-enum_data_impl enum_type<E>::data;
-
-template <typename E, if_t< is_enum<E>::value > = 0>
-inline static void init_enum(flecs::world_t *world, flecs::entity_t id) {
-    _::enum_type<E>::get().init(world, id);
-}
-
-template <typename E, if_not_t< is_enum<E>::value > = 0>
-inline static void init_enum(flecs::world_t*, flecs::entity_t) { }
-
-} // namespace _
-
-/** Enumeration type data wrapper with world pointer */
-template <typename E>
-struct enum_data {
-    enum_data(flecs::world_t *world, _::enum_data_impl& impl) 
-        : world_(world)
-        , impl_(impl) { }
-
-    bool is_valid(int value) {
-        return impl_.constants[value].id != 0;
-    }
-
-    int first() {
-        return impl_.min;
-    }
-
     int last() {
         return impl_.max;
     }
@@ -12867,8 +12240,6 @@ enum_data<E> enum_type(flecs::world_t *world) {
     return enum_data<E>(world, ref.data);
 }
 
-=======
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
 } // namespace flecs
 
 // Wrapper around ecs_strbuf_t that provides a simple stringstream like API.
@@ -15902,13 +15273,6 @@ public:
      */
     flecs::id pair(int32_t index) const;
 
-    /** Obtain pair id of term.
-     * This operation will fail if the term is not a pair.
-     * 
-     * @param index The term index.
-     */
-    flecs::id pair(int32_t index) const;
-
     /** Convert current iterator result to string.
      */
     flecs::string str() const {
@@ -18647,13 +18011,8 @@ struct cpp_type_impl {
             init(world, s_id, allow_tag);
 
             entity_t entity = ecs_cpp_component_register_explicit(
-<<<<<<< HEAD
                     world, s_id, id, name, type_name<T>(), symbol_name<T>(), 
                         s_size, s_alignment, is_component);
-=======
-                world, s_id, id, name, type_name<T>(), symbol_name<T>(), 
-                    s_size, s_alignment);
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
 
             s_id = entity;
 
@@ -19171,11 +18530,7 @@ inline flecs::entity id::first() const {
 }
 
 inline flecs::entity id::second() const {
-<<<<<<< HEAD
     flecs::entity_t e = ECS_PAIR_SECOND(m_id);
-=======
-    flecs::entity_t e = ECS_PAIR_OBJECT(m_id);
->>>>>>> 2a113572efaa10551adf25624367b0de9835d37b
     if (m_world) {
         return flecs::entity(m_world, ecs_get_alive(m_world, e));
     } else {
